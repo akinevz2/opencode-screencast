@@ -5,18 +5,20 @@
 # so the narration window is themed per-window via the theme sub-objects:
 #
 #   - narration UNFOCUSED: it is marked urgent; theme.urgent carries the
-#     look (#eeeeee outer border + 25px padding, no title) — only urgent
-#     windows draw it
+#     look — only urgent windows draw it
 #   - narration FOCUSED: theme.active carries the look (only the focused
 #     window draws the active theme); restored when focus moves elsewhere
 #
-# Padding is applied via theme.<t>.padding_{top,bottom,left,right} — hlwm
-# has dedicated padding attributes; the inner border region is NOT touched
-# (it belongs to the user's theme).
+# The look: a thin #eeeeee outer border, no title, and PADDING px of space
+# around the content via theme.<t>.padding_{top,bottom,left,right}. The
+# padding area renders as a solid slab in the frame colour, so the inner
+# colour is set to the global theme background (theme.background_color,
+# as defined by the autostart/reload_theme config) and inner_width is
+# zeroed — the padding then reads as empty desktop space with a thin
+# white outline around the window.
 #
 # The title is removed with title_when=never (title_height=0 means AUTO
-# height in this build and does not hide it). The border is drawn via the
-# OUTER border attributes so the color can never bleed into a title strip.
+# height in this build and does not hide it).
 #
 # Started by `screencastctl spawn narration`; exits by itself once no
 # window of the watched class exists, restoring the saved theme first.
@@ -30,6 +32,11 @@ RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
 mkdir -p "$RUNTIME_DIR"
 
 herb() { herbstclient "$@"; }
+
+# The padding slab colour: the global theme background as defined by the
+# autostart config, so the padding blends into the desktop background.
+BG="$(herb attr theme.background_color 2>/dev/null || printf '')"
+BG="${BG:-$COLOR}"
 
 # Dedupe via a lock directory holding the owner pid; a stale lock (dead
 # owner) is reclaimed. pgrep is not used — it matches parent cmdlines and
@@ -59,6 +66,7 @@ fi
 saved_active_outer_w="$(herb attr theme.active.outer_width 2>/dev/null || printf '')"
 saved_active_outer_c="$(herb attr theme.active.outer_color 2>/dev/null || printf '')"
 saved_active_inner_w="$(herb attr theme.active.inner_width 2>/dev/null || printf '')"
+saved_active_inner_c="$(herb attr theme.active.inner_color 2>/dev/null || printf '')"
 saved_active_pad_t="$(herb attr theme.active.padding_top 2>/dev/null || printf '')"
 saved_active_pad_b="$(herb attr theme.active.padding_bottom 2>/dev/null || printf '')"
 saved_active_pad_l="$(herb attr theme.active.padding_left 2>/dev/null || printf '')"
@@ -67,16 +75,32 @@ saved_active_title_when="$(herb attr theme.active.title_when 2>/dev/null || prin
 saved_urgent_outer_w="$(herb attr theme.urgent.outer_width 2>/dev/null || printf '')"
 saved_urgent_outer_c="$(herb attr theme.urgent.outer_color 2>/dev/null || printf '')"
 saved_urgent_inner_w="$(herb attr theme.urgent.inner_width 2>/dev/null || printf '')"
+saved_urgent_inner_c="$(herb attr theme.urgent.inner_color 2>/dev/null || printf '')"
 saved_urgent_pad_t="$(herb attr theme.urgent.padding_top 2>/dev/null || printf '')"
 saved_urgent_pad_b="$(herb attr theme.urgent.padding_bottom 2>/dev/null || printf '')"
 saved_urgent_pad_l="$(herb attr theme.urgent.padding_left 2>/dev/null || printf '')"
 saved_urgent_pad_r="$(herb attr theme.urgent.padding_right 2>/dev/null || printf '')"
 saved_urgent_title_when="$(herb attr theme.urgent.title_when 2>/dev/null || printf '')"
 
+# Apply the narration look to a theme sub-object (urgent|active).
+apply_look() {
+  local t="$1"
+  herb attr "theme.$t.outer_color" "$COLOR" 2>/dev/null
+  herb attr "theme.$t.outer_width" "$BORDER_W" 2>/dev/null
+  herb attr "theme.$t.inner_color" "$BG" 2>/dev/null
+  herb attr "theme.$t.inner_width" 0 2>/dev/null
+  herb attr "theme.$t.padding_top" "$PADDING" 2>/dev/null
+  herb attr "theme.$t.padding_bottom" "$PADDING" 2>/dev/null
+  herb attr "theme.$t.padding_left" "$PADDING" 2>/dev/null
+  herb attr "theme.$t.padding_right" "$PADDING" 2>/dev/null
+  herb attr "theme.$t.title_when" never 2>/dev/null
+}
+
 restore_active() {
   [[ -n "$saved_active_outer_w" ]] && herb attr theme.active.outer_width "$saved_active_outer_w" 2>/dev/null
   [[ -n "$saved_active_outer_c" ]] && herb attr theme.active.outer_color "$saved_active_outer_c" 2>/dev/null
   [[ -n "$saved_active_inner_w" ]] && herb attr theme.active.inner_width "$saved_active_inner_w" 2>/dev/null
+  [[ -n "$saved_active_inner_c" ]] && herb attr theme.active.inner_color "$saved_active_inner_c" 2>/dev/null
   [[ -n "$saved_active_pad_t" ]] && herb attr theme.active.padding_top "$saved_active_pad_t" 2>/dev/null
   [[ -n "$saved_active_pad_b" ]] && herb attr theme.active.padding_bottom "$saved_active_pad_b" 2>/dev/null
   [[ -n "$saved_active_pad_l" ]] && herb attr theme.active.padding_left "$saved_active_pad_l" 2>/dev/null
@@ -92,6 +116,7 @@ cleanup() {
   herb attr theme.urgent.outer_width "$saved_urgent_outer_w" 2>/dev/null
   herb attr theme.urgent.outer_color "$saved_urgent_outer_c" 2>/dev/null
   herb attr theme.urgent.inner_width "$saved_urgent_inner_w" 2>/dev/null
+  herb attr theme.urgent.inner_color "$saved_urgent_inner_c" 2>/dev/null
   herb attr theme.urgent.padding_top "$saved_urgent_pad_t" 2>/dev/null
   herb attr theme.urgent.padding_bottom "$saved_urgent_pad_b" 2>/dev/null
   herb attr theme.urgent.padding_left "$saved_urgent_pad_l" 2>/dev/null
@@ -101,18 +126,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# One-time: urgent windows (i.e. the unfocused narration) draw the look —
-# COLOR border plus PADDING px of space around the content, via the
-# dedicated theme padding attributes. inner_width is zeroed: on top of
-# PADDING padding it reads as a humongous border.
-herb attr theme.urgent.outer_color "$COLOR" 2>/dev/null
-herb attr theme.urgent.outer_width "$BORDER_W" 2>/dev/null
-herb attr theme.urgent.inner_width 0 2>/dev/null
-herb attr theme.urgent.padding_top "$PADDING" 2>/dev/null
-herb attr theme.urgent.padding_bottom "$PADDING" 2>/dev/null
-herb attr theme.urgent.padding_left "$PADDING" 2>/dev/null
-herb attr theme.urgent.padding_right "$PADDING" 2>/dev/null
-herb attr theme.urgent.title_when never 2>/dev/null
+# One-time: urgent windows (i.e. the unfocused narration) draw the look.
+apply_look urgent
 
 narr_wid() {
   local w
@@ -125,14 +140,7 @@ narr_wid() {
 apply_state() {
   local focus_cls="$1" wid
   if [[ "$focus_cls" == "$CLASS" ]]; then
-    herb attr theme.active.outer_color "$COLOR" 2>/dev/null
-    herb attr theme.active.outer_width "$BORDER_W" 2>/dev/null
-    herb attr theme.active.inner_width 0 2>/dev/null
-    herb attr theme.active.padding_top "$PADDING" 2>/dev/null
-    herb attr theme.active.padding_bottom "$PADDING" 2>/dev/null
-    herb attr theme.active.padding_left "$PADDING" 2>/dev/null
-    herb attr theme.active.padding_right "$PADDING" 2>/dev/null
-    herb attr theme.active.title_when never 2>/dev/null
+    apply_look active
     wid="$(narr_wid)" && herb attr "clients.$wid.urgent" false 2>/dev/null
   else
     restore_active

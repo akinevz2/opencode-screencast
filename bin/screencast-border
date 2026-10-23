@@ -5,9 +5,13 @@
 # so the narration window is themed per-window via the theme sub-objects:
 #
 #   - narration UNFOCUSED: it is marked urgent; theme.urgent carries the
-#     look (#eeeeee inner border, no title) — only urgent windows draw it
+#     look (#eeeeee outer border, no title) — only urgent windows draw it
 #   - narration FOCUSED: theme.active carries the look (only the focused
 #     window draws the active theme); restored when focus moves elsewhere
+#
+# The title is removed with title_when=never (title_height=0 means AUTO
+# height in this build and does not hide it). The border is drawn via the
+# OUTER border attributes so the color can never bleed into a title strip.
 #
 # Started by `screencastctl spawn narration`; exits by itself once no
 # window of the watched class exists, restoring the saved theme first.
@@ -15,20 +19,31 @@ set -u
 
 CLASS="${1:-ScreencastNarr}"
 COLOR="${2:-#eeeeee}"
-
-# Single instance per class.
-pgrep -f "screencast-border[ ]$CLASS" >/dev/null 2>&1 && exit 0
+BORDER_W="${SCREENCAST_NARR_BORDER_W:-3}"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
+mkdir -p "$RUNTIME_DIR"
 
 herb() { herbstclient "$@"; }
 
-# Save the focused-window theme so it can be restored on every focus move.
-saved_inner="$(herb attr theme.active.inner_color 2>/dev/null || printf '')"
-saved_title_h="$(herb attr theme.active.title_height 2>/dev/null || printf '')"
-saved_urgent_title_h="$(herb attr theme.urgent.title_height 2>/dev/null || printf '')"
+# Dedupe via a lock directory (pgrep -f matches parent cmdlines and would
+# make the watcher kill itself under wrapper processes).
+LOCK="$RUNTIME_DIR/screencast-border.$CLASS.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  exit 0  # already running
+fi
+
+# Save everything we touch, per theme sub-object.
+saved_active_outer_w="$(herb attr theme.active.outer_width 2>/dev/null || printf '')"
+saved_active_outer_c="$(herb attr theme.active.outer_color 2>/dev/null || printf '')"
+saved_active_title_when="$(herb attr theme.active.title_when 2>/dev/null || printf '')"
+saved_urgent_outer_w="$(herb attr theme.urgent.outer_width 2>/dev/null || printf '')"
+saved_urgent_outer_c="$(herb attr theme.urgent.outer_color 2>/dev/null || printf '')"
+saved_urgent_title_when="$(herb attr theme.urgent.title_when 2>/dev/null || printf '')"
 
 restore_active() {
-  [[ -n "$saved_inner" ]] && herb attr theme.active.inner_color "$saved_inner" 2>/dev/null
-  [[ -n "$saved_title_h" ]] && herb attr theme.active.title_height "$saved_title_h" 2>/dev/null
+  [[ -n "$saved_active_outer_w" ]] && herb attr theme.active.outer_width "$saved_active_outer_w" 2>/dev/null
+  [[ -n "$saved_active_outer_c" ]] && herb attr theme.active.outer_color "$saved_active_outer_c" 2>/dev/null
+  [[ -n "$saved_active_title_when" ]] && herb attr theme.active.title_when "$saved_active_title_when" 2>/dev/null
   return 0
 }
 
@@ -36,14 +51,17 @@ cleanup() {
   [[ -n "${idle_pid:-}" ]] && kill "$idle_pid" 2>/dev/null
   rm -f "${FIFO:-}" 2>/dev/null
   restore_active
-  # Undo the urgent look (no other window is urgent while we run).
-  [[ -n "$saved_urgent_title_h" ]] && herb attr theme.urgent.title_height "$saved_urgent_title_h" 2>/dev/null
+  herb attr theme.urgent.outer_width "$saved_urgent_outer_w" 2>/dev/null
+  herb attr theme.urgent.outer_color "$saved_urgent_outer_c" 2>/dev/null
+  herb attr theme.urgent.title_when "$saved_urgent_title_when" 2>/dev/null
+  rmdir "$LOCK" 2>/dev/null
 }
 trap cleanup EXIT
 
 # One-time: urgent windows (i.e. the unfocused narration) draw the look.
-herb attr theme.urgent.inner_color "$COLOR" 2>/dev/null
-herb attr theme.urgent.title_height 0 2>/dev/null
+herb attr theme.urgent.outer_color "$COLOR" 2>/dev/null
+herb attr theme.urgent.outer_width "$BORDER_W" 2>/dev/null
+herb attr theme.urgent.title_when never 2>/dev/null
 
 narr_wid() {
   local w
@@ -56,8 +74,9 @@ narr_wid() {
 apply_state() {
   local focus_cls="$1" wid
   if [[ "$focus_cls" == "$CLASS" ]]; then
-    herb attr theme.active.inner_color "$COLOR" 2>/dev/null
-    herb attr theme.active.title_height 0 2>/dev/null
+    herb attr theme.active.outer_color "$COLOR" 2>/dev/null
+    herb attr theme.active.outer_width "$BORDER_W" 2>/dev/null
+    herb attr theme.active.title_when never 2>/dev/null
     wid="$(narr_wid)" && herb attr "clients.$wid.urgent" false 2>/dev/null
   else
     restore_active
@@ -70,7 +89,7 @@ apply_state() {
 ( sleep 1.5; apply_state "$(herb attr clients.focus.class 2>/dev/null)" ) &
 
 # React to focus changes; self-terminate when the narration window is gone.
-FIFO="$(mktemp -u /tmp/opencode/screencast-border.XXXXXX)"
+FIFO="$(mktemp -u "$RUNTIME_DIR/screencast-border.XXXXXX")"
 mkfifo "$FIFO"
 herbstclient --idle > "$FIFO" 2>/dev/null &
 idle_pid=$!

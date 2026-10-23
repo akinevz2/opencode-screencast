@@ -19,6 +19,10 @@ set -u
 
 LOG="${1:?usage: screencast-presenter <logfile>}"
 
+# The pane is display-only: kill tty echo so stray input (keystrokes,
+# scroll-generated arrows) can never paint garbage on the narration.
+stty -echo 2>/dev/null || true
+
 title() { printf '\033]2;%s\033\\' "$1"; }
 title "narration"
 

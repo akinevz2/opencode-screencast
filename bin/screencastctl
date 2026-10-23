@@ -137,8 +137,12 @@ do_ensure() {
         # window never takes input, so it never needs focus. The presenter
         # disables autowrap (DECRST 7) in the pane: narration text is
         # pre-wrapped by say/log_hlwm, so nothing is ever soft-wrapped.
+        # Mouse is enabled so scrolling scrolls tmux history locally
+        # instead of injecting arrow-key escapes into the pane, and the
+        # presenter disables tty echo so stray input never paints garbage.
         tmux new-session -d -s "$session" -x 160 -y 48 \
           "$SELF_DIR/screencast-presenter" "$NARR_LOG"
+        tmux set-option -t "=$session" mouse on 2>/dev/null
         record_pane "$session"
       fi
       ;;

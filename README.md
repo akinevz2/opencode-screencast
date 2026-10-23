@@ -5,6 +5,36 @@ OpenCode agent. Plain markdown scripts drive the recording; the agent reads
 prose aloud into a floating narration window and silently performs the
 operations described in code blocks.
 
+## Installation
+
+This repo is both the tooling and an OpenCode V2 plugin (`index.ts`), which
+expects `bin/screencastctl` to sit next to it.
+
+Option A — npm package:
+
+```sh
+opencode plugin add github:akinevz2/opencode-screencast
+```
+
+Option B — submodule of the OpenCode config directory (stow-friendly):
+
+```sh
+git -C ~/dots/llms/.config/opencode submodule add \
+  git@github.com:akinevz2/opencode-screencast.git opencode-screencast
+```
+
+and in `opencode.jsonc` (relative paths resolve from the config file):
+
+```jsonc
+{ "plugins": ["./opencode-screencast"] }
+```
+
+Both approaches register the `screencast` tool namespace
+(`spawn_window`, `narrate`, `read_window`, `clear_window`, `delegate`,
+`type_keys`, `herbst`, `attr`, `wait`, `run_task`, `task_status`,
+`task_wait`) and the `/screencast <script.md>` command that encodes the
+script-format contract below.
+
 ## Components
 
 | File | Purpose |

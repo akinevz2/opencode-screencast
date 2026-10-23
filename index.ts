@@ -380,6 +380,7 @@ export default Plugin.define({
               narration: narration.length,
               orchestrators: orchestrators.length,
               returned_to: prev ?? null,
+              session_dir: sessionDir || null,
             }),
           }
         },

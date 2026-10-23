@@ -268,11 +268,12 @@ export default Plugin.define({
           type: "object",
           properties: {
             tag: { type: "string", description: "Destination herbstluftwm tag name (created if missing)." },
+            dry_run: { type: "boolean", description: "Report which windows would move without moving anything." },
           },
           required: ["tag"],
           additionalProperties: false,
         },
-        execute: async ({ tag }) => {
+        execute: async ({ tag, dry_run }) => {
           // Snapshot the process table once: pid -> {ppid, argv}.
           const procs = new Map<number, { ppid: number; argv: string[] }>()
           for (const d of readdirSync("/proc")) {
@@ -298,7 +299,7 @@ export default Plugin.define({
               if (!p) continue
               const base = (p.argv[0] ?? "").split("/").pop()
               if (base === "opencode" && p.argv.length === 1) return true
-              for (const c of procs.values()) if (c.ppid === pid) stack.push(c.pid)
+              for (const [cpid, c] of procs) if (c.ppid === pid) stack.push(cpid)
             }
             return false
           }
@@ -328,17 +329,20 @@ export default Plugin.define({
 
           const prev = JSON.parse(await ctl(["attrjson", "monitors.focus", ".attributes.tag | fromjson"]))
           const moved: string[] = []
-          for (const w of [...narration, ...orchestrators]) {
-            await ctl(["hlwm", "jumpto", w])
-            await ctl(["hlwm", "move", tag])
-            moved.push(w)
-          }
-          if (moved.length > 0 && prev && prev !== tag) {
-            await ctl(["hlwm", "use", String(prev)])
+          if (!dry_run) {
+            for (const w of [...narration, ...orchestrators]) {
+              await ctl(["hlwm", "jumpto", w])
+              await ctl(["hlwm", "move", tag])
+              moved.push(w)
+            }
+            if (moved.length > 0 && prev && prev !== tag) {
+              await ctl(["hlwm", "use", String(prev)])
+            }
           }
           return {
             content: JSON.stringify({
               moved,
+              dry_run: dry_run === true,
               narration: narration.length,
               orchestrators: orchestrators.length,
               returned_to: prev ?? null,

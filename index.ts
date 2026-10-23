@@ -91,19 +91,24 @@ export default Plugin.define({
       {
         name: "spawn_window",
         description:
-          "Spawn a floating herbstluftwm window: role 'narration' (audience-facing agent output) or 'command' (a controlled terminal the agent can delegate into). Persistent across window close.",
+          "Spawn a floating herbstluftwm window: role 'narration' (audience-facing agent output) or 'command' (a controlled terminal the agent can delegate into). Persistent across window close. For narration windows, advance_command (if given) is executed whenever the user presses a key in the window — used to advance a screencast script.",
         input: {
           type: "object",
           properties: {
             role: { type: "string", enum: ["narration", "command"] },
             session: { type: "string", description: "Optional tmux session name; defaults per role." },
+            advance_command: {
+              type: "string",
+              description: "narration only: shell command fired on keypress in the window, e.g. 'opencode run -s <sessionID> advance'",
+            },
           },
           required: ["role"],
           additionalProperties: false,
         },
-        execute: async ({ role, session }) => {
+        execute: async ({ role, session, advance_command }) => {
           const args = ["spawn", role]
           if (session) args.push(session)
+          if (advance_command) args.push("--advance", advance_command)
           return { content: (await ctl(args)).trim() }
         },
       },
@@ -340,17 +345,19 @@ export default Plugin.define({
         execute: async ({ sessionID, prompt, delivery }) => {
           const script = prompt.text.trim()
           const contract = [
-            "You are performing a LIVE screencast of herbstluftwm. The audience watches the screen; your narration appears in the floating narration window. The script drives everything.",
-            script ? `Script file: ${script} — read it first with the read tool.` : "No script path was given; ask the user for one.",
+            "You are performing a LIVE screencast of herbstluftwm. The audience watches the screen; your narration appears in the floating narration window. The script drives everything. You perform it ONE SCENE PER TURN.",
+            script ? `Script file: ${script} — read it with the read tool.` : "No script path was given; ask the user for one.",
             "",
-            "Rules:",
-            "1. Prose paragraphs: display each one verbatim in the narration window (screencast_narrate), one paragraph at a time. Do not add your own commentary.",
-            "2. A line that is exactly a `sleep Ns` or `sleep Nms` code span: idle that long (screencast_wait) before continuing. Display nothing.",
-            "3. Fenced blocks tagged hlwm (or untagged): run each line silently via screencast_herbst (args split on spaces). NEVER display these on screen.",
-            "4. Fenced blocks tagged ctl: run locally via bash. NEVER display these.",
-            "5. Fenced blocks tagged bash with an optional @session annotation: delegate verbatim into that controlled terminal (screencast_delegate, session = annotation without @, or the most recently spawned one). The audience sees the typing; do NOT copy the command into the narration window.",
-            "6. After each paragraph, idle ~2s (or the next sleep directive) before continuing, so narration stays readable.",
-            "7. Before starting, ensure the narration window exists (screencast_spawn_window role=narration) and clear it.",
+            "SCENE definition: a scene is ONE narration paragraph plus everything between it and the next paragraph (code blocks and sleep directives). Scenes are performed strictly in file order.",
+            "",
+            `Per turn, perform exactly ONE scene:`,
+            `1. Before the first scene: spawn the narration window (screencast_spawn_window, role=narration) with advance_command "opencode run -s ${sessionID} advance", then screencast_clear_window role=narration.`,
+            "2. Narrate the scene's paragraph verbatim (screencast_narrate). Never display anything else in the narration window.",
+            "3. Execute the scene's code blocks in order: hlwm → screencast_herbst per line; ctl → run locally via bash; bash @session → screencast_delegate with session = annotation without @ (the audience sees the typing live).",
+            "4. Execute the scene's `sleep Ns`/`sleep Nms` directives with screencast_wait.",
+            "5. END THE TURN immediately after one scene. Never perform two scenes in one turn. Never add your own commentary.",
+            "",
+            `ADVANCE PROTOCOL: after each scene the recording pauses. The user advances by sending any message in the TUI (default) or by pressing a key in the narration window (which submits an automatic "advance" prompt). Any new user message means: perform the NEXT scene, reading it from the file rather than from memory.`,
             "",
             "Begin now.",
           ].join("\n")

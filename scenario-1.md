@@ -2,18 +2,23 @@
 
 <!--
 Conventions (full contract in README.md):
-- Prose paragraphs are narrated live in the narration window, one at a time.
+- Prose paragraphs are narrated live in the narration window, one at a time;
+  the performer pauses after each paragraph-scene and waits for an advance
+  (a TUI message, or a keypress in the narration window).
 - ```hlwm blocks are silent herbstclient operations — never displayed.
 - ```ctl blocks are agent-side screencastctl invocations — never displayed.
 - ```bash blocks are delegated into the controlled terminal named in the
   @<session> annotation, or the most recently spawned one when omitted.
 - A line that is a lone `sleep Ns` or `sleep Nms` code span idles first.
+- Spawned windows are placed explicitly on the recording tag (tag= in the
+  one-shot rule, `use recording` around the spawn) so they appear there
+  regardless of which tag is currently visible.
 -->
 
 ## Pre-recording setup
 
 ```ctl
-screencastctl spawn narration
+screencastctl spawn narration --advance "opencode run advance"
 screencastctl clear narration
 ```
 
@@ -25,7 +30,7 @@ Hello, and welcome back. In this segment we create a fresh workspace called
 ## Creating the tag
 
 ```hlwm
-add recording
+silent add recording
 use recording
 ```
 
@@ -40,8 +45,9 @@ Next, a controlled terminal. The one-shot rule below floats whatever window
 is created next, so the terminal appears as a floating client.
 
 ```hlwm
-rule once floating=on
+rule once tag=recording floating=on focus=on
 spawn alacritty --class ScreencastCmd --title screencast-term1 -e /home/kine/development/system/screencast_scripts/bin/screencast-shell screencast-term1
+use recording
 ```
 
 There it is — a floating terminal, bound to the session
@@ -55,6 +61,7 @@ Now a second controlled terminal — with no rule in place this one joins
 the tiling layout instead of floating.
 
 ```hlwm
+use recording
 spawn alacritty --class ScreencastCmd --title screencast-term2 -e /home/kine/development/system/screencast_scripts/bin/screencast-shell screencast-term2
 ```
 
@@ -71,8 +78,10 @@ hc_tile
 A third controlled terminal, floated again by the same one-shot rule:
 
 ```hlwm
-rule once floating=on
+use recording
+rule once tag=recording floating=on focus=on
 spawn alacritty --class ScreencastCmd --title screencast-term3 -e /home/kine/development/system/screencast_scripts/bin/screencast-shell screencast-term3
+use recording
 ```
 
 And finally, a greeting from the agent, rendered by figlet inside that

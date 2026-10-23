@@ -40,7 +40,8 @@ script-format contract below.
 | File | Purpose |
 |---|---|
 | `bin/screencast-shell` | Bash wrapper enabling remote agent delegation. Run it via alacritty; it binds the terminal to a persistent tmux session running an interactive bash. |
-| `bin/screencast-narration` | Display wrapper for the agent narration window (follows the narration log). |
+| `bin/screencast-narration` | Display wrapper for the agent narration window (runs the presenter). |
+| `bin/screencast-presenter` | Narration window program: displays the narration log and converts a keypress in the window into an advance signal (`SC_ADVANCE_CMD`, debounced 2s). |
 | `bin/screencastctl` | The agent-facing control CLI (spawn/send/run/read/say/clear/key/status). |
 
 Both wrappers are launched through `screencastctl spawn`, which registers a
@@ -67,6 +68,7 @@ as `C-c`).
 
 ```
 screencastctl spawn   [narration|command] [session]   # floating window via herbstclient
+                             [--advance <cmd>]         # narration: fire cmd on keypress
 screencastctl ensure  [narration|command] [session]   # detached session, no window
 screencastctl send    [command] <text>                # type text + Enter
 screencastctl run     [command] <cmd>                 # send + wait idle + new output
@@ -94,7 +96,13 @@ Scripts are plain markdown, parsed by the agent (see the `/screencast`
 command once the plugin is installed):
 
 1. **Prose paragraphs** are narration. The agent displays each paragraph in
-   the narration window via `screencastctl say`, one at a time.
+   the narration window via `screencastctl say`, one at a time. The
+   performer works **one scene per turn** — a scene is one paragraph plus
+   the code blocks and sleep directives between it and the next paragraph —
+   and then pauses for an advance. Advance happens either via any TUI
+   message (default) or via a keypress in the narration window, which the
+   presenter converts into an `advance` prompt for the performing session
+   (`--advance "opencode run -s <sessionID> advance"`).
 2. **Fenced code blocks tagged `bash`** (or `sh`) are commands the agent
    delegates into the visible delegation shell via `screencastctl run`.
 3. **Fenced code blocks with any other tag** (`hlwm`, `pseudocode`, ...) are

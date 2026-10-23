@@ -121,12 +121,17 @@ EOF
 do_ensure() {
   local role="${1:-command}"
   local session
-  session="$(resolve_session "$role")"
+  # An explicit session argument (arg 2) always wins; otherwise resolve the
+  # role alias to the configured default session.
+  session="$(resolve_session "${2:-$role}")"
   case "$role" in
     narration|narr|read)
       touch "$NARR_LOG"
       if ! has_session "$session"; then
-        tmux new-session -d -s "$session" -x 160 -y 48 tail -n +1 -f "$NARR_LOG"
+        # Presenter pane: displays the narration log and (when configured)
+        # turns a keypress into an advance signal via SC_ADVANCE_CMD.
+        tmux new-session -d -s "$session" -x 160 -y 48 \
+          "$SELF_DIR/screencast-presenter" "$NARR_LOG"
         record_pane "$session"
       fi
       ;;
@@ -147,9 +152,14 @@ do_ensure() {
 # spawn — ensure + floating alacritty window via herbstclient
 # ---------------------------------------------------------------------------
 do_spawn() {
-  local role="${1:-command}"
+  local role="${1:-command}"; shift
+  local session_arg=""
+  if [[ -n "${1:-}" && "${1:-}" != "--advance" ]]; then session_arg="$1"; shift; fi
+  local advance=""
+  if [[ "${1:-}" == "--advance" ]]; then shift; advance="$*"; fi
+
   local session class title geom wrapper
-  session="$(do_ensure "$role" "${2:-}")"
+  session="$(do_ensure "$role" "$session_arg")"
   case "$role" in
     narration|narr|read)
       class=ScreencastNarr
@@ -165,6 +175,14 @@ do_spawn() {
       ;;
   esac
   command -v alacritty >/dev/null || die "alacritty not found"
+  if [[ -n "$advance" && "$role" == narration* ]]; then
+    # Bake the advance command into the presenter pane. set-environment +
+    # respawn so a long-lived session picks the wiring up on re-attach.
+    tmux set-environment -t "=$session" SC_ADVANCE_CMD "$advance"
+    local pt; pt="$(pane_target "$session")"
+    tmux respawn-pane -k -t "$pt" "$SELF_DIR/screencast-presenter" "$NARR_LOG"
+    record_pane "$session"
+  fi
   # One-shot rule: matches only the very next window with this WM_CLASS,
   # forcing it to float and take focus. Geometry is best-effort (this hlwm
   # build rejects unknown rule properties like max=off, so retry without).
@@ -261,13 +279,13 @@ do_clear() {
   session="$(resolve_session "$role")"
   has_session "$session" || die "no session: $session"
   if is_narration_role "$role"; then
-    # Truncate the log, then respawn the tail process on it: the fresh
-    # process starts on the now-empty file and tmux resets the pane's
-    # visible grid and history. The pane id survives, so the recorded
-    # target stays valid and any attached window stays open.
+    # Truncate the log, then respawn the presenter on it: the fresh process
+    # starts on the now-empty file and tmux resets the pane's visible grid
+    # and history. The pane id survives, so the recorded target stays valid
+    # and any attached window stays open.
     : > "$NARR_LOG"
     pt="$(pane_target "$session")"
-    tmux respawn-pane -k -t "$pt" tail -n +1 -f "$NARR_LOG"
+    tmux respawn-pane -k -t "$pt" "$SELF_DIR/screencast-presenter" "$NARR_LOG"
     record_pane "$session"
   else
     pt="$(pane_target "$session")"

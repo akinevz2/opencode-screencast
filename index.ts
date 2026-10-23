@@ -18,7 +18,7 @@
 import { Plugin } from "@opencode/plugin"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync, readFileSync, readlinkSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -287,8 +287,12 @@ export default Plugin.define({
               /* process vanished */
             }
           }
-          // Does this process subtree contain a bare interactive TUI?
-          const hasBareTui = (root: number): boolean => {
+          const sessionDir = ctx.location?.directory ?? ""
+          // Find this subtree's bare interactive TUI (argv exactly
+          // ["opencode"]) whose working directory belongs to this
+          // session's project — that pins the orchestrator for THIS
+          // screencast when several TUIs are open.
+          const findTuiPid = (root: number): number | null => {
             const stack = [root]
             const seen = new Set<number>()
             while (stack.length) {
@@ -298,10 +302,18 @@ export default Plugin.define({
               const p = procs.get(pid)
               if (!p) continue
               const base = (p.argv[0] ?? "").split("/").pop()
-              if (base === "opencode" && p.argv.length === 1) return true
+              if (base === "opencode" && p.argv.length === 1) {
+                if (!sessionDir) return pid
+                try {
+                  const cwd = readlinkSync(`/proc/${pid}/cwd`)
+                  if (cwd === sessionDir || cwd.startsWith(sessionDir + "/")) return pid
+                } catch {
+                  /* cwd unreadable */
+                }
+              }
               for (const [cpid, c] of procs) if (c.ppid === pid) stack.push(cpid)
             }
-            return false
+            return null
           }
 
           const clients = JSON.parse(await ctl(["attrjson", "clients"]))
@@ -324,7 +336,7 @@ export default Plugin.define({
               if (klass === "ScreencastNarr" && winTag !== tag) narration.push(w)
               continue
             }
-            if (winTag !== tag && pid > 0 && hasBareTui(pid)) orchestrators.push(w)
+            if (winTag !== tag && pid > 0 && findTuiPid(pid) !== null) orchestrators.push(w)
           }
 
           const prev = JSON.parse(await ctl(["attrjson", "monitors.focus", ".attributes.tag | fromjson"]))

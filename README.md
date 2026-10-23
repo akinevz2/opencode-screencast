@@ -96,8 +96,8 @@ screencastctl status
 Roles: `narration` (aliases `narr`, `read`) and `command` (aliases `cmd`,
 `shell`, `write`). A raw tmux session name is also accepted. The narration
 window is display-only and never takes focus; it is themed per-window by
-`bin/screencast-border`: a `#eeeeee` inner
-border and no title, synthesized on hlwm 0.9.5 through the `urgent` theme
+`bin/screencast-border`: a `#eeeeee` border with 25px padding and no title,
+synthesized on hlwm 0.9.5 through the `urgent` theme
 (while unfocused) and the `active` theme (while focused), since this build
 has no per-client theming and no `border_color` rule property.
 

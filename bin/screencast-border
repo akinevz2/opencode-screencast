@@ -5,7 +5,8 @@
 # so the narration window is themed per-window via the theme sub-objects:
 #
 #   - narration UNFOCUSED: it is marked urgent; theme.urgent carries the
-#     look (#eeeeee outer border, no title) — only urgent windows draw it
+#     look (#eeeeee outer border + 25px padding, no title) — only urgent
+#     windows draw it
 #   - narration FOCUSED: theme.active carries the look (only the focused
 #     window draws the active theme); restored when focus moves elsewhere
 #
@@ -20,6 +21,7 @@ set -u
 CLASS="${1:-ScreencastNarr}"
 COLOR="${2:-#eeeeee}"
 BORDER_W="${SCREENCAST_NARR_BORDER_W:-3}"
+PADDING="${SCREENCAST_NARR_PADDING:-25}"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
 mkdir -p "$RUNTIME_DIR"
 
@@ -52,14 +54,20 @@ fi
 # Save everything we touch, per theme sub-object.
 saved_active_outer_w="$(herb attr theme.active.outer_width 2>/dev/null || printf '')"
 saved_active_outer_c="$(herb attr theme.active.outer_color 2>/dev/null || printf '')"
+saved_active_inner_w="$(herb attr theme.active.inner_width 2>/dev/null || printf '')"
+saved_active_inner_c="$(herb attr theme.active.inner_color 2>/dev/null || printf '')"
 saved_active_title_when="$(herb attr theme.active.title_when 2>/dev/null || printf '')"
 saved_urgent_outer_w="$(herb attr theme.urgent.outer_width 2>/dev/null || printf '')"
 saved_urgent_outer_c="$(herb attr theme.urgent.outer_color 2>/dev/null || printf '')"
+saved_urgent_inner_w="$(herb attr theme.urgent.inner_width 2>/dev/null || printf '')"
+saved_urgent_inner_c="$(herb attr theme.urgent.inner_color 2>/dev/null || printf '')"
 saved_urgent_title_when="$(herb attr theme.urgent.title_when 2>/dev/null || printf '')"
 
 restore_active() {
   [[ -n "$saved_active_outer_w" ]] && herb attr theme.active.outer_width "$saved_active_outer_w" 2>/dev/null
   [[ -n "$saved_active_outer_c" ]] && herb attr theme.active.outer_color "$saved_active_outer_c" 2>/dev/null
+  [[ -n "$saved_active_inner_w" ]] && herb attr theme.active.inner_width "$saved_active_inner_w" 2>/dev/null
+  [[ -n "$saved_active_inner_c" ]] && herb attr theme.active.inner_color "$saved_active_inner_c" 2>/dev/null
   [[ -n "$saved_active_title_when" ]] && herb attr theme.active.title_when "$saved_active_title_when" 2>/dev/null
   return 0
 }
@@ -70,14 +78,20 @@ cleanup() {
   restore_active
   herb attr theme.urgent.outer_width "$saved_urgent_outer_w" 2>/dev/null
   herb attr theme.urgent.outer_color "$saved_urgent_outer_c" 2>/dev/null
+  herb attr theme.urgent.inner_width "$saved_urgent_inner_w" 2>/dev/null
+  herb attr theme.urgent.inner_color "$saved_urgent_inner_c" 2>/dev/null
   herb attr theme.urgent.title_when "$saved_urgent_title_when" 2>/dev/null
   rmdir "$LOCK" 2>/dev/null
 }
 trap cleanup EXIT INT TERM
 
-# One-time: urgent windows (i.e. the unfocused narration) draw the look.
+# One-time: urgent windows (i.e. the unfocused narration) draw the look —
+# COLOR border plus a PADDING px frame around the content (hlwm has no
+# padding attribute; the inner border region doubles as padding).
 herb attr theme.urgent.outer_color "$COLOR" 2>/dev/null
 herb attr theme.urgent.outer_width "$BORDER_W" 2>/dev/null
+herb attr theme.urgent.inner_color "$COLOR" 2>/dev/null
+herb attr theme.urgent.inner_width "$PADDING" 2>/dev/null
 herb attr theme.urgent.title_when never 2>/dev/null
 
 narr_wid() {
@@ -93,6 +107,8 @@ apply_state() {
   if [[ "$focus_cls" == "$CLASS" ]]; then
     herb attr theme.active.outer_color "$COLOR" 2>/dev/null
     herb attr theme.active.outer_width "$BORDER_W" 2>/dev/null
+    herb attr theme.active.inner_color "$COLOR" 2>/dev/null
+    herb attr theme.active.inner_width "$PADDING" 2>/dev/null
     herb attr theme.active.title_when never 2>/dev/null
     wid="$(narr_wid)" && herb attr "clients.$wid.urgent" false 2>/dev/null
   else

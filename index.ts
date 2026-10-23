@@ -301,12 +301,18 @@ export default Plugin.define({
 
           // The orchestrator is whatever window currently holds focus —
           // unless that is the narration window itself (it never controls
-          // the session).
-          const focusWinid = String(
-            JSON.parse(await ctl(["attrjson", "clients.focus", ".attributes.winid | fromjson"])),
-          )
-          const orchestrators: string[] =
-            focusWinid && !narration.includes(focusWinid) ? [focusWinid] : []
+          // the session). Staging must run while a window is focused; if
+          // the view is on an empty frame, move only the narration and
+          // report it rather than failing mid-take.
+          let orchestrators: string[] = []
+          try {
+            const focusWinid = String(
+              JSON.parse(await ctl(["attrjson", "clients.focus", ".attributes.winid | fromjson"])),
+            )
+            if (focusWinid && !narration.includes(focusWinid)) orchestrators = [focusWinid]
+          } catch {
+            /* no focused client (empty frame) — narration-only move */
+          }
 
           const prev = JSON.parse(await ctl(["attrjson", "monitors.focus", ".attributes.tag | fromjson"]))
           const moved: string[] = []

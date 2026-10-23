@@ -32,17 +32,15 @@ Hello, and welcome back. In this segment we create a fresh workspace called
 
 ## Creating the tag
 
-```hlwm
-silent add recording
-use recording
-```
-
-The tag "recording" now exists and is active — notice the empty root frame
-in the status bar.
+The tag is created and we move onto it in one step — staging must happen
+while the agent window still holds focus.
 
 ```stage
 recording
 ```
+
+The tag "recording" now exists and is active — notice the empty root frame
+in the status bar.
 
 `sleep 1s`
 

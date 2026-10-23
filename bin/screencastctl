@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+# screencastctl — remote delegation control for screencast windows.
+#
+# The agent-facing CLI over two persistent tmux sessions:
+#
+#   narration ("read" window)  — pane continuously repaints the narration
+#                                log; the agent writes paragraphs with `say`
+#                                and verifies what is on screen with `read`.
+#   command  ("write" window)  — pane runs an interactive bash; the agent
+#                                delegates commands with `send`/`run` and
+#                                captures their output with `read`.
+#
+# Windows are spawned floating in herbstluftwm via `spawn`:
+#
+#   screencastctl spawn narration   # floating narration window
+#   screencastctl spawn command     # floating delegation shell
+#
+# Subcommands:
+#   ensure  [role] [session]     create detached session if missing (no window)
+#   spawn   [role] [session]     ensure + floating alacritty via herbstclient
+#   send    [role] <text>        type text + Enter into the command shell
+#   run     [role] <cmd>         send, wait for idle, print only new output
+#   read    [role] [--lines N]   capture pane (incl. scrollback) to stdout
+#   say     <text...>            append a paragraph to the narration window
+#   clear   [role]               wipe screen + history of the given window
+#   key     [role] <keysym...>   send raw tmux key names (e.g. C-c)
+#   hlwm    <args...>            run herbstclient silently (pseudocode ops)
+#   attrjson <object-path>      herbstclient attr <path> as JSON (herbstutil)
+#   spawn-task <session> <cmd>  floating window running one command; may
+#                               prompt (e.g. sudo) — title protocol reports
+#                               running -> done:<rc>, then drops to a shell
+#   task-status <session>       STATE/EXIT/OUTPUT(base64) for a task session
+#   task-wait [timeout] <s>     poll until the task finishes (default 30s)
+#   status                        overview of sessions, panes and log
+#
+# Environment overrides:
+#   SCREENCAST_CMD_SESSION    (default: screencast-cmd)
+#   SCREENCAST_NARR_SESSION   (default: screencast-narr)
+#   SCREENCAST_RUN_TIMEOUT    seconds for `run` to wait for idle (default 15)
+#   SCREENCAST_CMD_GEOM       hlwm floating geometry for the command window
+#   SCREENCAST_NARR_GEOM      hlwm floating geometry for the narration window
+set -euo pipefail
+
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
+mkdir -p "$RUNTIME_DIR"
+NARR_SESSION="${SCREENCAST_NARR_SESSION:-screencast-narr}"
+CMD_SESSION="${SCREENCAST_CMD_SESSION:-screencast-cmd}"
+NARR_LOG="$RUNTIME_DIR/narration.log"
+RUN_TIMEOUT="${SCREENCAST_RUN_TIMEOUT:-15}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+die() { printf 'screencastctl: %s\n' "$*" >&2; exit 1; }
+
+usage() { sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+# Map a role keyword (or an explicit tmux session name) to a session name.
+resolve_session() {
+  case "${1:-command}" in
+    narration|narr|read)  printf '%s' "$NARR_SESSION" ;;
+    command|cmd|shell|write) printf '%s' "$CMD_SESSION" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+is_narration_role() {
+  case "$1" in narration|narr|read) return 0 ;; *) return 1 ;; esac
+}
+
+has_session() { tmux has-session -t "=$1" 2>/dev/null; }
+
+# Exact pane target. ensure() records the pane id (%N) at creation time; we
+# prefer it (stable across window creation/renames) and fall back to the
+# explicit "=session:0.0" target spec, which tmux 3.6 resolves reliably.
+# NOTE: do not merge the local declarations — under `set -u` the $session
+# reference would expand before the assignment lands.
+pane_target() {
+  local session="$1"
+  local f="$RUNTIME_DIR/$session.pane"
+  local id=""
+  if [[ -r "$f" ]] && id="$(<"$f")" && tmux display-message -p -t "$id" '#{pane_id}' >/dev/null 2>&1; then
+    printf '%s' "$id"
+  else
+    printf '=%s:0.0' "$session"
+  fi
+}
+
+record_pane() {
+  tmux display-message -p -t "$1:0.0" '#{pane_id}' 2>/dev/null \
+    | tr -d '[:space:]' > "$RUNTIME_DIR/$1.pane" || true
+}
+
+pane_title() { tmux display-message -p -t "$(pane_target "$1")" '#{pane_title}' 2>/dev/null || true; }
+
+# ---------------------------------------------------------------------------
+# ensure — create detached sessions without opening any window
+# ---------------------------------------------------------------------------
+write_cmd_rc() {
+  local rc="$RUNTIME_DIR/$1.bashrc"
+  cat > "$rc" <<'EOF'
+# screencast delegation shell rc — managed by screencastctl
+__sc_set_title() { printf '\033]2;%s\033\\' "$1"; }
+__sc_preexec_invoke() {
+  local c="$BASH_COMMAND"
+  case "$c" in __sc_*|PROMPT_COMMAND*|trap\ *) return ;; esac
+  trap - DEBUG
+  __sc_set_title running
+  trap '__sc_preexec_invoke' DEBUG
+}
+
+# User environment first; our prompt and title protocol hooks are armed
+# last so they win and never fire while the rcfile itself is sourced.
+source "$HOME/.bashrc" 2>/dev/null || true
+PS1='\[\e[1;36m\][screencast]\[\e[0m\] \[\e[1;32m\]\w\[\e[0m\] \$ '
+trap '__sc_preexec_invoke' DEBUG
+PROMPT_COMMAND='__sc_set_title idle'
+EOF
+  printf '%s' "$rc"
+}
+
+do_ensure() {
+  local role="${1:-command}"
+  local session
+  session="$(resolve_session "$role")"
+  case "$role" in
+    narration|narr|read)
+      touch "$NARR_LOG"
+      if ! has_session "$session"; then
+        tmux new-session -d -s "$session" -x 160 -y 48 tail -n +1 -f "$NARR_LOG"
+        record_pane "$session"
+      fi
+      ;;
+    command|cmd|shell|write)
+      if ! has_session "$session"; then
+        local rc
+        rc="$(write_cmd_rc "$session")"
+        tmux new-session -d -s "$session" bash --rcfile "$rc"
+        record_pane "$session"
+      fi
+      ;;
+    *) die "unknown role: $role (use narration|command or a session name)" ;;
+  esac
+  printf '%s\n' "$session"
+}
+
+# ---------------------------------------------------------------------------
+# spawn — ensure + floating alacritty window via herbstclient
+# ---------------------------------------------------------------------------
+do_spawn() {
+  local role="${1:-command}"
+  local session class title geom wrapper
+  session="$(do_ensure "$role" "${2:-}")"
+  case "$role" in
+    narration|narr|read)
+      class=ScreencastNarr
+      title="screencast: narration"
+      geom="${SCREENCAST_NARR_GEOM:-1100x620+40+760}"
+      wrapper="$SELF_DIR/screencast-narration"
+      ;;
+    *)
+      class=ScreencastCmd
+      title="screencast: shell"
+      geom="${SCREENCAST_CMD_GEOM:-1100x620+1380+760}"
+      wrapper="$SELF_DIR/screencast-shell"
+      ;;
+  esac
+  command -v alacritty >/dev/null || die "alacritty not found"
+  # One-shot rule: matches only the very next window with this WM_CLASS,
+  # forcing it to float and take focus. Geometry is best-effort (this hlwm
+  # build rejects unknown rule properties like max=off, so retry without).
+  herbstclient rule once focus=on floating=on class="$class" \
+      floating_geometry="$geom" 2>/dev/null \
+    || herbstclient rule once focus=on floating=on class="$class"
+  herbstclient spawn alacritty --class "$class" --title "$title" -e "$wrapper" "$session"
+  printf 'spawned %s window (session: %s)\n' "$role" "$session"
+}
+
+# ---------------------------------------------------------------------------
+# delegation — send / run / read / key / clear
+# ---------------------------------------------------------------------------
+do_send() {
+  local role="${1:-command}"; shift
+  local session pt
+  session="$(resolve_session "$role")"
+  has_session "$session" || die "no session: $session (run: screencastctl ensure $role)"
+  pt="$(pane_target "$session")"
+  tmux send-keys -t "$pt" -l -- "$*"
+  tmux send-keys -t "$pt" Enter
+}
+
+# Wait until the pane title returns to "idle" (prompt back). Falls back to
+# watching the pane's current foreground command if titles are unavailable.
+wait_idle() {
+  local session="$1"
+  local pt deadline=$(( $(date +%s) + RUN_TIMEOUT )) title cmd
+  pt="$(pane_target "$session")"
+  while (( $(date +%s) < deadline )); do
+    title="$(tmux display-message -p -t "$pt" '#{pane_title}' 2>/dev/null || true)"
+    case "$title" in idle) return 0 ;; esac
+    cmd="$(tmux display-message -p -t "$pt" '#{pane_current_command}' 2>/dev/null || true)"
+    [[ "$cmd" == bash && ( -z "$title" || "$title" == idle ) ]] && return 0
+    sleep 0.15
+  done
+  return 1
+}
+
+capture() {
+  local session="$1" pt lines="${2:--}"
+  pt="$(pane_target "$session")"
+  if [[ "$lines" == "-" ]]; then
+    tmux capture-pane -p -t "$pt" -S -
+  else
+    tmux capture-pane -p -t "$pt" -S "-$lines"
+  fi
+}
+
+strip_blank_tail() { awk 'NF{p=NR} {buf[NR]=$0} END{for(i=1;i<=p;i++) print buf[i]}'; }
+
+do_run() {
+  local role="${1:-command}"; shift
+  local session; session="$(resolve_session "$role")"
+  has_session "$session" || die "no session: $session (run: screencastctl ensure $role)"
+
+  local before after before_lines
+  before="$(capture "$session" | strip_blank_tail)"
+  before_lines="$(printf '%s\n' "$before" | wc -l)"
+
+  do_send "$role" "$*"
+
+  if ! wait_idle "$session"; then
+    printf 'screencastctl: timeout after %ss — command may still be running\n' "$RUN_TIMEOUT" >&2
+  fi
+  sleep 0.1
+
+  after="$(capture "$session" | strip_blank_tail)"
+  # Print only the lines added since the command was issued.
+  printf '%s\n' "$after" | tail -n "+$((before_lines + 1))"
+}
+
+do_read() {
+  local role="${1:-command}"; shift
+  local lines="-"
+  if [[ "${1:-}" == "--lines" ]]; then lines="${2:--}"; shift 2 || true; fi
+  local session; session="$(resolve_session "$role")"
+  has_session "$session" || die "no session: $session (run: screencastctl ensure $role)"
+  capture "$session" "$lines" | strip_blank_tail
+}
+
+do_key() {
+  local role="${1:-command}"; shift
+  local session pt
+  session="$(resolve_session "$role")"
+  has_session "$session" || die "no session: $session"
+  pt="$(pane_target "$session")"
+  tmux send-keys -t "$pt" "$@"
+}
+
+do_clear() {
+  local role="${1:-command}"
+  local session pt
+  session="$(resolve_session "$role")"
+  has_session "$session" || die "no session: $session"
+  if is_narration_role "$role"; then
+    # Truncate the log, then respawn the tail process on it: the fresh
+    # process starts on the now-empty file and tmux resets the pane's
+    # visible grid and history. The pane id survives, so the recorded
+    # target stays valid and any attached window stays open.
+    : > "$NARR_LOG"
+    pt="$(pane_target "$session")"
+    tmux respawn-pane -k -t "$pt" tail -n +1 -f "$NARR_LOG"
+    record_pane "$session"
+  else
+    pt="$(pane_target "$session")"
+    tmux clear-history -t "$pt" 2>/dev/null || true
+    tmux send-keys -t "$pt" C-l
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# narration — say
+# ---------------------------------------------------------------------------
+do_say() {
+  [[ $# -gt 0 ]] || die "say: missing text"
+  touch "$NARR_LOG"
+  printf '%s\n\n' "$*" >> "$NARR_LOG"
+}
+
+# ---------------------------------------------------------------------------
+# herbstluftwm — silent hlwm operations + JSON state reads
+# ---------------------------------------------------------------------------
+do_hlwm() {
+  [[ $# -gt 0 ]] || die "hlwm: missing herbstclient arguments"
+  herbstclient "$@"
+}
+
+# `herbstclient attr <path>` piped through herbstutil gives the agent a
+# machine-readable {value, children, attributes} view of the object tree.
+do_attrjson() {
+  [[ $# -eq 1 ]] || die "attrjson: exactly one object path required"
+  command -v herbstutil >/dev/null || die "herbstutil not found in PATH"
+  herbstclient attr "$1" | herbstutil
+}
+
+# ---------------------------------------------------------------------------
+# task pipeline — one command in a visible window, completion detection
+# ---------------------------------------------------------------------------
+# Generates the task script: title goes "running" while the command executes
+# (sudo prompts included), then "done:<rc>", then exec's the standard
+# delegation shell so the window stays alive as a controlled terminal.
+write_task_script() {
+  local session="$1" cmd="$2"
+  local rc="$RUNTIME_DIR/$session.bashrc"
+  local script="$RUNTIME_DIR/$session.task.sh"
+  local exitfile="$RUNTIME_DIR/$session.exit"
+  write_cmd_rc "$session" >/dev/null
+  rm -f "$exitfile"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' '__sc_set_title() { printf "\033]2;%s\033\\" "$1"; }'
+    printf '%s\n' '__sc_set_title running'
+    # The command runs in a subshell so a bare `exit` inside it ends the
+    # command, not this wrapper — the exit code is always recorded and the
+    # window always drops into the delegation shell afterwards.
+    printf '%s\n' '('
+    printf '%s\n' "$cmd"
+    printf '%s\n' ')'
+    printf '%s\n' 'rc=$?'
+    printf '%s\n' "__sc_set_title \"done:\$rc\""
+    printf '%s\n' "printf '%s' \"\$rc\" > '$exitfile'"
+    printf '%s\n' 'printf "\n[task finished: exit %s — delegation shell]\n" "$rc"'
+    printf '%s\n' "exec bash --rcfile '$rc'"
+  } > "$script"
+  chmod +x "$script"
+  printf '%s' "$script"
+}
+
+do_spawn_task() {
+  local session cmd geom="${SCREENCAST_TASK_GEOM:-1100x620+700+400}"
+  if [[ $# -ge 2 ]]; then session="$1"; shift; else session="${SCREENCAST_TASK_SESSION:-screencast-task}"; fi
+  [[ $# -gt 0 ]] || die "spawn-task: missing command"
+  cmd="$*"
+  local script; script="$(write_task_script "$session" "$cmd")"
+  # Restart cleanly if an instance of this task session already exists.
+  tmux kill-session -t "=$session" 2>/dev/null || true
+  tmux new-session -d -s "$session" bash "$script"
+  record_pane "$session"
+  command -v alacritty >/dev/null || die "alacritty not found"
+  herbstclient rule once focus=on floating=on class=ScreencastCmd \
+      floating_geometry="$geom" 2>/dev/null \
+    || herbstclient rule once focus=on floating=on class=ScreencastCmd
+  herbstclient spawn alacritty --class ScreencastCmd --title "screencast: task" \
+    -e tmux attach-session -t "=$session"
+  printf '%s\n' "$session"
+}
+
+# STATE / EXIT / OUTPUT(base64) — base64 keeps the tail JSON-safe.
+# The task script durably records its exit code in $session.exit, so the
+# code survives even when the transient done:<rc> pane title is missed.
+print_task_status() {
+  local session="$1" state="absent" exit="" tail_b64=""
+  if has_session "$session"; then
+    local title exitfile="$RUNTIME_DIR/$session.exit"
+    title="$(pane_title "$session")"
+    case "$title" in
+      running) state="running" ;;
+      done:*)  state="done"; exit="${title#done:}" ;;
+      idle)    state="done" ;;
+      "")      state="unknown" ;;
+      *)       state="$title" ;;
+    esac
+    if [[ -z "$exit" && -r "$exitfile" ]]; then
+      exit="$(<"$exitfile")"
+    fi
+    tail_b64="$(capture "$session" 20 | tail -n 20 | base64 -w0)"
+  fi
+  printf 'STATE %s\nEXIT %s\nOUTPUT %s\n' "$state" "${exit:--}" "${tail_b64:--}"
+}
+
+do_task_status() {
+  print_task_status "$(resolve_session "${1:-screencast-task}")"
+}
+
+do_task_wait() {
+  local timeout="${SCREENCAST_TASK_TIMEOUT:-30}" session
+  if [[ $# -ge 2 ]]; then timeout="$1"; shift; fi
+  session="$(resolve_session "${1:-screencast-task}")"
+  if has_session "$session"; then
+    local pt deadline=$(( $(date +%s) + timeout )) title
+    pt="$(pane_target "$session")"
+    while (( $(date +%s) < deadline )); do
+      title="$(tmux display-message -p -t "$pt" '#{pane_title}' 2>/dev/null || true)"
+      case "$title" in done:*|idle) break ;; esac
+      sleep 0.25
+    done
+  fi
+  print_task_status "$session"
+}
+
+do_status() {
+  printf 'narration session : %s (%s)\n' "$NARR_SESSION" \
+    "$(has_session "$NARR_SESSION" && echo alive || echo absent)"
+  printf 'command  session  : %s (%s)\n' "$CMD_SESSION" \
+    "$(has_session "$CMD_SESSION" && echo alive || echo absent)"
+  printf 'narration log     : %s\n' "$NARR_LOG"
+  if has_session "$NARR_SESSION"; then
+    printf 'narration pane    : %s (%s)\n' "$(pane_target "$NARR_SESSION")" "$(pane_title "$NARR_SESSION")"
+  fi
+  if has_session "$CMD_SESSION"; then
+    printf 'command pane      : %s (%s / %s)\n' "$(pane_target "$CMD_SESSION")" \
+      "$(pane_title "$CMD_SESSION")" \
+      "$(tmux display-message -p -t "$(pane_target "$CMD_SESSION")" '#{pane_current_command}')"
+  fi
+}
+
+case "${1:-}" in
+  ensure)  shift; do_ensure "$@" ;;
+  spawn)   shift; do_spawn "$@" ;;
+  send)    shift; do_send "$@" ;;
+  run)     shift; do_run "$@" ;;
+  read)    shift; do_read "$@" ;;
+  key)     shift; do_key "$@" ;;
+  clear)   shift; do_clear "$@" ;;
+  say)     shift; do_say "$@" ;;
+  hlwm)    shift; do_hlwm "$@" ;;
+  attrjson) shift; do_attrjson "$@" ;;
+  spawn-task) shift; do_spawn_task "$@" ;;
+  task-status) shift; do_task_status "$@" ;;
+  task-wait) shift; do_task_wait "$@" ;;
+  status)  do_status ;;
+  help|-h|--help) usage ;;
+  "")      usage ;;
+  *)       die "unknown subcommand: $1 (try: screencastctl help)" ;;
+esac

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# screencast-shell — bash wrapper enabling remote agent delegation.
+#
+# Launch inside a terminal so the audience sees a live shell the agent can
+# drive remotely, e.g.:
+#
+#   alacritty --class ScreencastCmd -e screencast-shell [SESSION]
+#
+# The wrapper binds this terminal to a *persistent* tmux session running an
+# interactive bash. The agent delegates into it via `screencastctl send|run`
+# and reads results via `screencastctl read`. If the terminal is closed, the
+# session (and its history) survives; re-running the wrapper re-attaches.
+#
+# Delegation contract (consumed by screencastctl / the OpenCode plugin):
+#   - The pane runs bash with a distinctive prompt: [screencast] ... $
+#   - The pane title is set to "running" while a command executes and
+#     "idle" at each prompt, so remote callers can detect completion.
+set -euo pipefail
+
+SESSION="${1:-${SCREENCAST_SESSION:-screencast-cmd}}"
+CTL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Create (or reuse) the delegation session, then attach this terminal to it.
+"$CTL_DIR/screencastctl" ensure command "$SESSION"
+
+# Replace the shell with the attached tmux client. Closing the terminal
+# detaches; the session and the bash inside it keep running.
+exec tmux attach-session -t "=$SESSION"

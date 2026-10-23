@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-screencast",
+  "version": "0.1.0",
+  "description": "OpenCode plugin: narrate herbstluftwm screencasts live from a floating narration window, delegate into visible controlled terminals, and run prompted task pipelines (e.g. sudo) with completion detection.",
+  "type": "module",
+  "license": "MIT",
+  "main": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.1.4"
+  },
+  "devDependencies": {
+    "bun-types": "^1.4.4",
+    "typescript": "^5.6.0"
+  }
+}

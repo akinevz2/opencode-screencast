@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# screencast-narration — display wrapper for the agent narration window.
+#
+# Launch inside a terminal so the audience sees the agent's live narration:
+#
+#   alacritty --class ScreencastNarr -e screencast-narration [SESSION]
+#
+# The pane runs `tail -f` over the narration log
+#   ${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast/narration.log
+# The agent appends paragraphs with `screencastctl say` and reads back what
+# is on screen with `screencastctl read narration`.
+set -euo pipefail
+
+SESSION="${1:-${SCREENCAST_NARR_SESSION:-screencast-narr}}"
+CTL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+"$CTL_DIR/screencastctl" ensure narration "$SESSION"
+
+exec tmux attach-session -t "=$SESSION"

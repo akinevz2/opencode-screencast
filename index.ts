@@ -1,0 +1,351 @@
+/**
+ * opencode-screencast — OpenCode plugin for live herbstluftwm screencasts.
+ *
+ * Feature 1 (screen interaction): tools that let the agent spawn floating
+ * narration/delegation windows, narrate into them, delegate visible shell
+ * commands, and drive herbstluftwm silently — all via the `screencastctl`
+ * CLI that ships beside this file in bin/.
+ *
+ * Feature 2 (task pipeline): spawn a terminal window running a single
+ * command that may request user input (e.g. sudo), with title-protocol
+ * based completion detection (running -> done:<rc>) so the agent can wait
+ * for the task instead of guessing.
+ *
+ * Layout contract: this plugin expects bin/screencastctl next to index.ts.
+ * When installed as a submodule of the OpenCode config directory
+ * (~/.config/opencode/opencode-screencast), bin/ ships with the checkout.
+ */
+import { Plugin } from "@opencode/plugin"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const execFileAsync = promisify(execFile)
+
+const here =
+  typeof (import.meta as { dir?: string }).dir === "string"
+    ? (import.meta as { dir: string }).dir
+    : path.dirname(fileURLToPath(import.meta.url))
+
+const CTL = path.join(here, "bin", "screencastctl")
+
+/** Run screencastctl and return stdout. stderr flows through on failure. */
+async function ctl(args: string[], timeoutMs = 120_000): Promise<string> {
+  const { stdout } = await execFileAsync(CTL, args, {
+    timeout: timeoutMs,
+    maxBuffer: 8 * 1024 * 1024,
+    encoding: "utf8",
+  })
+  return stdout
+}
+
+/** Parse STATE/EXIT/OUTPUT(base64) task status lines. */
+function parseTaskStatus(raw: string): {
+  state: string
+  exit: string | null
+  output: string
+} {
+  let state = "unknown"
+  let exit: string | null = null
+  let output = ""
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("STATE ")) state = line.slice(6).trim()
+    else if (line.startsWith("EXIT ")) {
+      const v = line.slice(5).trim()
+      exit = v === "-" ? null : v
+    } else if (line.startsWith("OUTPUT ")) {
+      const v = line.slice(7).trim()
+      if (v !== "-") {
+        try {
+          output = Buffer.from(v, "base64").toString("utf8").replace(/\n+$/, "")
+        } catch {
+          output = ""
+        }
+      }
+    }
+  }
+  return { state, exit, output }
+}
+
+const schema = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
+} as const
+
+interface ToolDef {
+  name: string
+  description: string
+  input: Record<string, unknown>
+  execute: (input: any) => Promise<{ content: string }>
+}
+
+export default Plugin.define({
+  id: "screencast",
+  async setup(ctx) {
+    const tools: ToolDef[] = [
+      // ---------------------------------------------------------------------
+      // Feature 1 — screen interaction
+      // ---------------------------------------------------------------------
+      {
+        name: "spawn_window",
+        description:
+          "Spawn a floating herbstluftwm window: role 'narration' (audience-facing agent output) or 'command' (a controlled terminal the agent can delegate into). Persistent across window close.",
+        input: {
+          type: "object",
+          properties: {
+            role: { type: "string", enum: ["narration", "command"] },
+            session: { type: "string", description: "Optional tmux session name; defaults per role." },
+          },
+          required: ["role"],
+          additionalProperties: false,
+        },
+        execute: async ({ role, session }) => {
+          const args = ["spawn", role]
+          if (session) args.push(session)
+          return { content: (await ctl(args)).trim() }
+        },
+      },
+      {
+        name: "narrate",
+        description:
+          "Display one narration paragraph in the floating narration window for the audience. Call once per paragraph.",
+        input: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+          additionalProperties: false,
+        },
+        execute: async ({ text }) => {
+          await ctl(["say", text])
+          return { content: "narrated" }
+        },
+      },
+      {
+        name: "read_window",
+        description:
+          "Read what is currently visible in a screencast window (narration or command), including recent scrollback. Use to verify what the audience sees or to collect command output.",
+        input: {
+          type: "object",
+          properties: {
+            role: { type: "string", enum: ["narration", "command"] },
+            lines: { type: "number", description: "Only the last N lines; omit for full pane." },
+          },
+          required: ["role"],
+          additionalProperties: false,
+        },
+        execute: async ({ role, lines }) => {
+          const args = ["read", role]
+          if (typeof lines === "number") args.push("--lines", String(lines))
+          return { content: (await ctl(args)).trimEnd() }
+        },
+      },
+      {
+        name: "clear_window",
+        description: "Wipe screen and history of a screencast window (narration or command).",
+        input: {
+          type: "object",
+          properties: { role: { type: "string", enum: ["narration", "command"] } },
+          required: ["role"],
+          additionalProperties: false,
+        },
+        execute: async ({ role }) => {
+          await ctl(["clear", role])
+          return { content: "cleared" }
+        },
+      },
+      {
+        name: "delegate",
+        description:
+          "Type a command into the visible controlled terminal and wait for the prompt to return. Returns only the newly produced output. The audience sees the typing live.",
+        input: {
+          type: "object",
+          properties: {
+            command: { type: "string" },
+            session: { type: "string", description: "Target tmux session; defaults to the main command window." },
+          },
+          required: ["command"],
+          additionalProperties: false,
+        },
+        execute: async ({ command, session }) => {
+          const args = ["run"]
+          if (session) args.push(session)
+          args.push(command)
+          return { content: (await ctl(args)).trimEnd() }
+        },
+      },
+      {
+        name: "type_keys",
+        description: "Send raw key events to the controlled terminal (e.g. C-c, Enter, Escape).",
+        input: {
+          type: "object",
+          properties: {
+            keys: { type: "array", items: { type: "string" } },
+            session: { type: "string" },
+          },
+          required: ["keys"],
+          additionalProperties: false,
+        },
+        execute: async ({ keys, session }) => {
+          const args = ["key"]
+          if (session) args.push(session)
+          args.push(...keys)
+          await ctl(args)
+          return { content: "sent" }
+        },
+      },
+      {
+        name: "herbst",
+        description:
+          "Run a herbstclient command silently (window manager operations). These are never shown on screen. Example: args ['add', 'recording'].",
+        input: {
+          type: "object",
+          properties: { args: { type: "array", items: { type: "string" } } },
+          required: ["args"],
+          additionalProperties: false,
+        },
+        execute: async ({ args }) => {
+          return { content: (await ctl(["hlwm", ...args])).trim() }
+        },
+      },
+      {
+        name: "attr",
+        description:
+          "Read a herbstluftwm object path as JSON (via herbstclient attr + herbstutil), e.g. clients.focus or tags.focus.",
+        input: {
+          type: "object",
+          properties: { object_path: { type: "string" } },
+          required: ["object_path"],
+          additionalProperties: false,
+        },
+        execute: async ({ object_path }) => {
+          const raw = await ctl(["attrjson", object_path])
+          try {
+            return { content: JSON.stringify(JSON.parse(raw)) }
+          } catch {
+            return { content: raw }
+          }
+        },
+      },
+      {
+        name: "wait",
+        description: "Idle for a number of milliseconds (screencast timing directive).",
+        input: {
+          type: "object",
+          properties: { ms: { type: "number" } },
+          required: ["ms"],
+          additionalProperties: false,
+        },
+        execute: async ({ ms }) => {
+          const n = Math.max(0, Math.min(Number(ms) || 0, 600_000))
+          await new Promise((r) => setTimeout(r, n))
+          return { content: `waited ${n}ms` }
+        },
+      },
+
+      // ---------------------------------------------------------------------
+      // Feature 2 — task pipeline (visible command + completion detection)
+      // ---------------------------------------------------------------------
+      {
+        name: "run_task",
+        description:
+          "Spawn a floating terminal running a single command that may request user input (e.g. sudo). The window title reports 'running' while it executes and 'done:<rc>' when it finishes, then drops to a delegation shell. Returns the session id used for task_status/task_wait.",
+        input: {
+          type: "object",
+          properties: {
+            command: { type: "string", description: "Single-line shell command." },
+            session: { type: "string", description: "Task session name; defaults to screencast-task." },
+          },
+          required: ["command"],
+          additionalProperties: false,
+        },
+        execute: async ({ command, session }) => {
+          const args = ["spawn-task"]
+          if (session) args.push(session)
+          args.push(command)
+          const sid = (await ctl(args)).trim()
+          return { content: `task session: ${sid}` }
+        },
+      },
+      {
+        name: "task_status",
+        description:
+          "Poll a task session: state (absent/running/done), exit code when done, and the last lines of visible output.",
+        input: {
+          type: "object",
+          properties: { session: { type: "string" } },
+          required: ["session"],
+          additionalProperties: false,
+        },
+        execute: async ({ session }) => {
+          const status = parseTaskStatus(await ctl(["task-status", session]))
+          return { content: JSON.stringify(status) }
+        },
+      },
+      {
+        name: "task_wait",
+        description:
+          "Wait until a task session finishes (or the timeout elapses), then return state, exit code and output tail.",
+        input: {
+          type: "object",
+          properties: {
+            session: { type: "string" },
+            timeout_s: { type: "number", description: "Seconds to wait; default 30." },
+          },
+          required: ["session"],
+          additionalProperties: false,
+        },
+        execute: async ({ session, timeout_s }) => {
+          const args = ["task-wait"]
+          if (typeof timeout_s === "number") args.push(String(timeout_s))
+          args.push(session)
+          const status = parseTaskStatus(await ctl(args, (Math.max(30, Number(timeout_s) || 30) + 15) * 1000))
+          return { content: JSON.stringify(status) }
+        },
+      },
+    ]
+
+    await ctx.tool.transform((editor) => {
+      editor.namespace({
+        name: "screencast",
+        description: "Drive herbstluftwm screencast windows (narration, delegation, hlwm ops, tasks).",
+      })
+      for (const tool of tools) {
+        editor.add({
+          name: tool.name,
+          description: tool.description,
+          input: tool.input as never,
+          options: { namespace: "screencast", codemode: true },
+          execute: async (input: unknown) => tool.execute(input),
+        })
+      }
+    })
+
+    await ctx.command.transform((editor) => {
+      editor.add({
+        name: "screencast",
+        description: "Perform a screencast script (markdown) live on screen",
+        execute: async ({ sessionID, prompt, delivery }) => {
+          const script = prompt.text.trim()
+          const contract = [
+            "You are performing a LIVE screencast of herbstluftwm. The audience watches the screen; your narration appears in the floating narration window. The script drives everything.",
+            script ? `Script file: ${script} — read it first with the read tool.` : "No script path was given; ask the user for one.",
+            "",
+            "Rules:",
+            "1. Prose paragraphs: display each one verbatim in the narration window (screencast_narrate), one paragraph at a time. Do not add your own commentary.",
+            "2. A line that is exactly a `sleep Ns` or `sleep Nms` code span: idle that long (screencast_wait) before continuing. Display nothing.",
+            "3. Fenced blocks tagged hlwm (or untagged): run each line silently via screencast_herbst (args split on spaces). NEVER display these on screen.",
+            "4. Fenced blocks tagged ctl: run locally via bash. NEVER display these.",
+            "5. Fenced blocks tagged bash with an optional @session annotation: delegate verbatim into that controlled terminal (screencast_delegate, session = annotation without @, or the most recently spawned one). The audience sees the typing; do NOT copy the command into the narration window.",
+            "6. After each paragraph, idle ~2s (or the next sleep directive) before continuing, so narration stays readable.",
+            "7. Before starting, ensure the narration window exists (screencast_spawn_window role=narration) and clear it.",
+            "",
+            "Begin now.",
+          ].join("\n")
+          await ctx.session.prompt({ sessionID, text: contract, delivery })
+        },
+      })
+    })
+  },
+})

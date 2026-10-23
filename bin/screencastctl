@@ -25,7 +25,8 @@
 #   clear   [role]               wipe screen + history of the given window
 #   key     [role] <keysym...>   send raw tmux key names (e.g. C-c)
 #   hlwm    <args...>            run herbstclient silently (pseudocode ops)
-#   attrjson <object-path>      herbstclient attr <path> as JSON (herbstutil)
+#   attrjson <object-path> [jq]  herbstclient attr <path> as JSON (herbstutil),
+#                               optionally transformed through jq
 #   spawn-task <session> <cmd>  floating window running one command; may
 #                               prompt (e.g. sudo) — title protocol reports
 #                               running -> done:<rc>, then drops to a shell
@@ -294,10 +295,23 @@ do_hlwm() {
 
 # `herbstclient attr <path>` piped through herbstutil gives the agent a
 # machine-readable {value, children, attributes} view of the object tree.
+# `herbstclient attr <path>` piped through herbstutil gives the agent a
+# machine-readable {value, children, attributes} view of the object tree.
+# An optional jq filter transforms the JSON before it is returned. Note:
+# herbstutil renders hlwm attribute values as JSON strings (with embedded
+# quotes for strings), so `.attributes.X | fromjson` yields the native
+# JSON value.
 do_attrjson() {
-  [[ $# -eq 1 ]] || die "attrjson: exactly one object path required"
+  local path="${1:-}" filter="${2:-}"
+  [[ -n "$path" ]] || die "attrjson: object path required"
+  [[ $# -le 2 ]] || die "attrjson: expected <object-path> [jq-filter]"
   command -v herbstutil >/dev/null || die "herbstutil not found in PATH"
-  herbstclient attr "$1" | herbstutil
+  if [[ -n "$filter" ]]; then
+    command -v jq >/dev/null || die "jq not found in PATH"
+    herbstclient attr "$path" | herbstutil | jq "$filter"
+  else
+    herbstclient attr "$path" | herbstutil
+  fi
 }
 
 # ---------------------------------------------------------------------------

@@ -212,15 +212,26 @@ export default Plugin.define({
       {
         name: "attr",
         description:
-          "Read a herbstluftwm object path as JSON (via herbstclient attr + herbstutil), e.g. clients.focus or tags.focus.",
+          "Read a herbstluftwm object path (GET: attr without a value) as JSON via herbstclient attr + herbstutil. Returns {value, children, attributes}. Optionally pass a jq filter to transform/shrink the result before it reaches the model. Note: herbstutil renders hlwm attribute values as JSON strings, so `.attributes.X | fromjson` yields the native JSON value. Prefer this tool over calling `herbstclient attr` through bash: the structured output is cheaper and needs no post-processing. Setting attribute values is a write — use screencast_herbst with args ['attr', path, value].",
         input: {
           type: "object",
-          properties: { object_path: { type: "string" } },
+          properties: {
+            object_path: {
+              type: "string",
+              description: "hlwm object path, e.g. clients.focus, tags.focus, monitors.0",
+            },
+            jq: {
+              type: "string",
+              description: "Optional jq filter applied to the JSON, e.g. '.attributes', '.attributes.floating_geometry', or '.attributes | map_values(try fromjson catch .)' to unwrap hlwm's string-quoted values into native JSON",
+            },
+          },
           required: ["object_path"],
           additionalProperties: false,
         },
-        execute: async ({ object_path }) => {
-          const raw = await ctl(["attrjson", object_path])
+        execute: async ({ object_path, jq }) => {
+          const args = ["attrjson", object_path]
+          if (typeof jq === "string" && jq.trim() !== "") args.push(jq)
+          const raw = await ctl(args)
           try {
             return { content: JSON.stringify(JSON.parse(raw)) }
           } catch {

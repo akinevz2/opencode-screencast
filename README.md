@@ -75,7 +75,8 @@ screencastctl say     <text...>                       # append narration paragra
 screencastctl clear   [role]                          # wipe screen + history
 screencastctl key     [command] <keysym...>           # raw keys, e.g. C-c
 screencastctl hlwm    <args...>                       # silent herbstclient ops
-screencastctl attrjson <object-path>                  # attr tree as JSON
+screencastctl attrjson <object-path> [jq-filter]      # attr tree as JSON,
+                                                      # optionally jq-filtered
 screencastctl status
 ```
 

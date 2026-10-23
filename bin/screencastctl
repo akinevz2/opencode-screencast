@@ -183,6 +183,14 @@ do_spawn() {
     tmux respawn-pane -k -t "$pt" "$SELF_DIR/screencast-presenter" "$NARR_LOG"
     record_pane "$session"
   fi
+  # Skip spawning if a window of this class is already displayed — repeat
+  # spawn calls must not stack duplicate attach windows.
+  if herbstclient list_clients 2>/dev/null | while read -r w; do
+        [[ "$(herbstclient attr "clients.$w.class" 2>/dev/null)" == "$class" ]] && echo dup
+      done | grep -q dup; then
+    printf '%s already displayed (session: %s)\n' "$class" "$session"
+    return 0
+  fi
   # One-shot rule: matches only the very next window with this WM_CLASS,
   # forcing it to float and take focus. Geometry is best-effort (this hlwm
   # build rejects unknown rule properties like max=off, so retry without).

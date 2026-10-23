@@ -79,7 +79,7 @@ interface ToolDef {
   name: string
   description: string
   input: Record<string, unknown>
-  execute: (input: any) => Promise<{ content: string }>
+  execute: (input: any, context?: { sessionID?: string }) => Promise<{ content: string }>
 }
 
 export default Plugin.define({
@@ -273,7 +273,20 @@ export default Plugin.define({
           required: ["tag"],
           additionalProperties: false,
         },
-        execute: async ({ tag, dry_run }) => {
+        execute: async ({ tag, dry_run }, context) => {
+          // Pin the orchestrator to the CALLING session's project directory:
+          // the TUI window running the interactive session that invoked this
+          // tool is the one whose opencode process cwd is that directory.
+          let sessionDir = ""
+          if (context?.sessionID) {
+            try {
+              const session = await ctx.session.get({ sessionID: context.sessionID })
+              const loc = (session as { location?: { directory?: string } }).location
+              sessionDir = loc?.directory ?? ""
+            } catch {
+              /* fall back to no pinning */
+            }
+          }
           // Snapshot the process table once: pid -> {ppid, argv}.
           const procs = new Map<number, { ppid: number; argv: string[] }>()
           for (const d of readdirSync("/proc")) {
@@ -287,7 +300,6 @@ export default Plugin.define({
               /* process vanished */
             }
           }
-          const sessionDir = ctx.location?.directory ?? ""
           // Find this subtree's bare interactive TUI (argv exactly
           // ["opencode"]) whose working directory belongs to this
           // session's project — that pins the orchestrator for THIS

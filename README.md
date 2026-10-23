@@ -64,8 +64,17 @@ Text is hard-wrapped to the live pane width at write time and the pane's
 autowrap is disabled (DECRST 7, emitted by the presenter — tmux 3.6 has no
 `wrap` option anymore), so the window only ever shows complete lines —
 nothing is soft-wrapped or clipped. The window is strictly display-only: it
-takes no input, fires no commands, and never needs focus (which is also
-what keeps its theme stable — see `bin/screencast-border`).
+takes no input, fires no commands, and never needs focus.
+
+The narration look is applied **once at spawn** — no watcher process. The
+one-shot rule floats the window with `focus=off`; the theme.urgent
+sub-object carries the style (a `#eeeeee` 3px outline, 25px padding whose
+slab is blended into the desktop by setting `inner_color` to the global
+`theme.background_color` and `inner_width` to 0, no title), and the window
+is marked urgent once it maps. Since the window is never focused, the
+urgent flag and the look simply persist; the env overrides
+`SCREENCAST_NARR_BORDER`, `SCREENCAST_NARR_BORDER_W` and
+`SCREENCAST_NARR_PADDING` tune it.
 
 **Delegation shell (write window)** — floating pane running bash with a
 distinctive `[screencast]` prompt. The pane title toggles `running` while a
@@ -95,17 +104,18 @@ screencastctl status
 
 Roles: `narration` (aliases `narr`, `read`) and `command` (aliases `cmd`,
 `shell`, `write`). A raw tmux session name is also accepted. The narration
-window is display-only and never takes focus; it is themed per-window by
-`bin/screencast-border`: a `#eeeeee` border with 25px padding and no title,
-synthesized on hlwm 0.9.5 through the `urgent` theme
-(while unfocused) and the `active` theme (while focused), since this build
-has no per-client theming and no `border_color` rule property.
+window is display-only and never takes focus; it is styled once at spawn —
+no watcher — by applying the `theme.urgent` sub-object (a `#eeeeee` outline
+with 25px padding blended into the global background colour, no title) and
+marking the window urgent, since this build has no per-client theming and
+its rules accept no styling properties.
 
 Environment overrides: `SCREENCAST_CMD_SESSION`, `SCREENCAST_NARR_SESSION`,
 `SCREENCAST_RUN_TIMEOUT` (default 15s), `SCREENCAST_CMD_GEOM`,
 `SCREENCAST_NARR_GEOM` (herbstluftwm floating geometry, e.g.
 `1100x620+1380+760`), `SCREENCAST_NARR_WIDTH` (narration wrap width used
-when no pane exists yet to query; default 160).
+when no pane exists yet to query; default 160), `SCREENCAST_NARR_BORDER` /
+`SCREENCAST_NARR_BORDER_W` / `SCREENCAST_NARR_PADDING` (narration theme).
 
 ## Screencast script format
 

@@ -158,6 +158,27 @@ do_ensure() {
 # ---------------------------------------------------------------------------
 # spawn — ensure + floating alacritty window via herbstclient
 # ---------------------------------------------------------------------------
+# One-shot narration theme (no watcher): the narration window is display-
+# only, never focused, and marked urgent once at spawn — so theme.urgent
+# carries the entire look. The padding slab renders as a solid frame, so
+# the inner colour is the global theme background (theme.background_color
+# from the autostart config) and inner_width is zeroed: the padding reads
+# as empty desktop space around a thin white outline.
+style_narration_theme() {
+  local bg outer="${SCREENCAST_NARR_BORDER:-#eeeeee}" pad="${SCREENCAST_NARR_PADDING:-25}"
+  bg="$(herbstclient attr theme.background_color 2>/dev/null || true)"
+  bg="${bg:-$outer}"
+  herbstclient attr theme.urgent.outer_color "$outer" 2>/dev/null
+  herbstclient attr theme.urgent.outer_width "${SCREENCAST_NARR_BORDER_W:-3}" 2>/dev/null
+  herbstclient attr theme.urgent.inner_color "$bg" 2>/dev/null
+  herbstclient attr theme.urgent.inner_width 0 2>/dev/null
+  herbstclient attr theme.urgent.padding_top "$pad" 2>/dev/null
+  herbstclient attr theme.urgent.padding_bottom "$pad" 2>/dev/null
+  herbstclient attr theme.urgent.padding_left "$pad" 2>/dev/null
+  herbstclient attr theme.urgent.padding_right "$pad" 2>/dev/null
+  herbstclient attr theme.urgent.title_when never 2>/dev/null
+}
+
 do_spawn() {
   local role="${1:-command}"; shift
   local session_arg=""
@@ -175,8 +196,8 @@ do_spawn() {
       title="screencast: narration"
       geom="${SCREENCAST_NARR_GEOM:-1100x620+40+760}"
       wrapper="$SELF_DIR/screencast-narration"
-      border="${SCREENCAST_NARR_BORDER:-#eeeeee}"
-      focus_rule=""   # narration never takes initial focus
+      focus_rule="focus=off"  # narration never takes focus
+      style_narration_theme   # one-shot theme application, no watcher
       ;;
     *)
       class=ScreencastCmd
@@ -204,11 +225,25 @@ do_spawn() {
       floating_geometry="$geom" 2>/dev/null \
     || herbstclient rule once floating=on $focus_rule class="$class"
   herbstclient spawn alacritty --class "$class" --title "$title" -e "$wrapper" "$session"
-  if [[ -n "$border" ]]; then
-    # Per-window theme (border + no title) via the urgent/active themes.
-    # setsid detaches the watcher from the invoking process group so it
-    # survives the plugin's execFile child lifecycle.
-    setsid "$SELF_DIR/screencast-border" "$class" "$border" </dev/null >/dev/null 2>&1 &
+  if [[ "$role" == narration* ]]; then
+    # One-shot: mark the window urgent once it maps, so it draws the
+    # theme.urgent look. No watcher — the window is display-only and
+    # never focused (rule focus=off), so the flag simply persists.
+    local wid="" i
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+      wid="$(herbstclient list_clients 2>/dev/null | while read -r w; do
+        [[ "$(herbstclient attr "clients.$w.class" 2>/dev/null)" == "$class" ]] && echo "$w"
+      done | head -1)"
+      [[ -n "$wid" ]] && break
+      sleep 0.1
+    done
+    if [[ -n "$wid" ]]; then
+      herbstclient attr "clients.$wid.urgent" true 2>/dev/null
+      printf 'spawned %s window (session: %s, winid: %s)\n' "$role" "$session" "$wid"
+      return 0
+    fi
+    printf 'screencastctl: narration window did not map — urgent flag not set\n' >&2
+    return 1
   fi
   printf 'spawned %s window (session: %s)\n' "$role" "$session"
 }

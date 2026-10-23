@@ -41,7 +41,7 @@ script-format contract below.
 |---|---|
 | `bin/screencast-shell` | Bash wrapper enabling remote agent delegation. Run it via alacritty; it binds the terminal to a persistent tmux session running an interactive bash. |
 | `bin/screencast-narration` | Display wrapper for the agent narration window (runs the presenter). |
-| `bin/screencast-presenter` | Narration window program: displays the narration log and converts a keypress in the window into an advance signal (`SC_ADVANCE_CMD`, debounced 2s). |
+| `bin/screencast-presenter` | Narration window program: flicker-free display of the narration log (plus the live hlwm operation feed). Strictly display-only — reads no input, fires no commands, never needs focus. |
 | `bin/screencastctl` | The agent-facing control CLI (spawn/send/run/read/say/clear/key/status). |
 
 Both wrappers are launched through `screencastctl spawn`, which registers a
@@ -55,7 +55,17 @@ and its history survive, and re-running the wrapper re-attaches.
 `${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast/narration.log`. The agent
 writes paragraphs with `screencastctl say`, verifies what the audience sees
 with `screencastctl read narration`, and wipes both with
-`screencastctl clear narration`.
+`screencastctl clear narration`. Two feeds land in the log: narration
+paragraphs, and every hlwm operation the agent performs (`screencastctl
+hlwm` live-feeds timestamped lines as they happen; the durable copy is
+`${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast/hlwm.log`).
+
+Text is hard-wrapped to the live pane width at write time and the pane's
+autowrap is disabled (DECRST 7, emitted by the presenter — tmux 3.6 has no
+`wrap` option anymore), so the window only ever shows complete lines —
+nothing is soft-wrapped or clipped. The window is strictly display-only: it
+takes no input, fires no commands, and never needs focus (which is also
+what keeps its theme stable — see `bin/screencast-border`).
 
 **Delegation shell (write window)** — floating pane running bash with a
 distinctive `[screencast]` prompt. The pane title toggles `running` while a
@@ -68,7 +78,6 @@ as `C-c`).
 
 ```
 screencastctl spawn   [narration|command] [session]   # floating window via herbstclient
-                             [--advance <cmd>]         # narration: fire cmd on keypress
 screencastctl ensure  [narration|command] [session]   # detached session, no window
 screencastctl send    [command] <text>                # type text + Enter
 screencastctl run     [command] <cmd>                 # send + wait idle + new output
@@ -76,16 +85,18 @@ screencastctl read    [role] [--lines N]              # capture pane incl. scrol
 screencastctl say     <text...>                       # append narration paragraph
 screencastctl clear   [role]                          # wipe screen + history
 screencastctl key     [command] <keysym...>           # raw keys, e.g. C-c
-screencastctl hlwm    <args...>                       # silent herbstclient ops
+screencastctl hlwm    <args...>                       # herbstclient op; live-fed to
+                                                      # the narration window feed
 screencastctl attrjson <object-path> [jq-filter]      # attr tree as JSON,
                                                       # optionally jq-filtered
+                                                      # (reads are not fed)
 screencastctl status
 ```
 
 Roles: `narration` (aliases `narr`, `read`) and `command` (aliases `cmd`,
 `shell`, `write`). A raw tmux session name is also accepted. The narration
-window takes a `--advance <cmd>` hook fired on any keypress (debounced 2s),
-and is themed per-window by `bin/screencast-border`: a `#eeeeee` inner
+window is display-only and never takes focus; it is themed per-window by
+`bin/screencast-border`: a `#eeeeee` inner
 border and no title, synthesized on hlwm 0.9.5 through the `urgent` theme
 (while unfocused) and the `active` theme (while focused), since this build
 has no per-client theming and no `border_color` rule property.
@@ -93,7 +104,8 @@ has no per-client theming and no `border_color` rule property.
 Environment overrides: `SCREENCAST_CMD_SESSION`, `SCREENCAST_NARR_SESSION`,
 `SCREENCAST_RUN_TIMEOUT` (default 15s), `SCREENCAST_CMD_GEOM`,
 `SCREENCAST_NARR_GEOM` (herbstluftwm floating geometry, e.g.
-`1100x620+1380+760`).
+`1100x620+1380+760`), `SCREENCAST_NARR_WIDTH` (narration wrap width used
+when no pane exists yet to query; default 160).
 
 ## Screencast script format
 
@@ -104,15 +116,16 @@ command once the plugin is installed):
    the narration window via `screencastctl say`, one at a time. The
    performer works **one scene per turn** — a scene is one paragraph plus
    the code blocks and sleep directives between it and the next paragraph —
-   and then pauses for an advance. Advance happens either via any TUI
-   message (default) or via a keypress in the narration window, which the
-   presenter converts into an `advance` prompt for the performing session
-   (`--advance "opencode run -s <sessionID> advance"`).
+   and then pauses for an advance. Advance happens via any TUI message;
+   the narration window itself is display-only and takes no input.
 2. **Fenced code blocks tagged `bash`** (or `sh`) are commands the agent
    delegates into the visible delegation shell via `screencastctl run`.
 3. **Fenced code blocks with any other tag** (`hlwm`, `pseudocode`, ...) are
    herbstluftwm operations expressed as `herbstclient` arguments. The agent
-   executes them directly with herbstclient and must **never** display them.
+   executes them with `screencastctl hlwm`, which live-feeds each operation
+   as a timestamped line into the narration window — the audience sees
+   exactly what opencode does to the window manager. The agent must never
+   narrate or re-display them manually.
 4. **A line consisting of a single inline code span** — `` `sleep 2s` `` or
    `` `sleep 500ms` `` — is a directive to idle before reading the next
    paragraph. Nothing is displayed.

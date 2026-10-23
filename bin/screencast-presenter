@@ -7,41 +7,26 @@
 # appends an ANSI clear marker, which tail forwards to the pane — the view
 # wipes without any repaint loop.
 #
-# When SC_ADVANCE_CMD is set in the tmux session environment, any keypress
-# in the window fires it — used to advance a screencast script:
+# The narration log carries two feeds, both appended by screencastctl:
+#   - narration paragraphs (`screencastctl say`)
+#   - the hlwm operations opencode performs while broadcasting
+#     (`screencastctl hlwm` live-feeds each operation as it happens)
 #
-#   SC_ADVANCE_CMD="opencode run -s <sessionID> advance"
-#
-# Keypresses are debounced (2s cooldown) so a hammered Enter cannot queue
-# multiple scene skips. The pane title flips to "advancing" during the
-# cooldown as visual feedback.
+# The window is strictly display-only: it reads no input and fires no
+# commands, so it never needs focus — an accidentally focused narration
+# window cannot submit anything anywhere.
 set -u
 
 LOG="${1:?usage: screencast-presenter <logfile>}"
-ADV="${SC_ADVANCE_CMD:-}"
 
 title() { printf '\033]2;%s\033\\' "$1"; }
 title "narration"
 
-# Key reader: owns the pane's tty; runs alongside the display loop.
-# In a non-interactive script bash hands background jobs /dev/null stdin,
-# so dup the pane tty to fd 3 synchronously first and read from that.
-exec 3<&0
-key_reader() {
-  local last=0 now
-  while read -rsn1 -u 3; do
-    now="$(date +%s)"
-    (( now < last + 2 )) && continue
-    last="$now"
-    title "advancing"
-    if [[ -n "$ADV" ]]; then
-      ( cd "${SC_ADVANCE_DIR:-$PWD}" && nohup sh -c "$ADV" >/dev/null 2>&1 & ) || true
-    fi
-    sleep 1.5
-    title "narration"
-  done
-}
-key_reader &
+# Disable autowrap in the pane (DECRST 7): narration text is pre-wrapped
+# to the pane width by screencastctl, so the pane itself must never
+# soft-wrap (or, after a shrink, clip) a line. tmux 3.6 has no wrap
+# option anymore — the pane's own DECAWM mode is the only switch.
+printf '\033[?7l'
 
 # Background scrollback purge — invisible (only drops scrolled-off lines).
 purge_history() {

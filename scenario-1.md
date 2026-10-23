@@ -4,10 +4,11 @@
 Conventions (full contract in README.md):
 - Prose paragraphs are narrated live in the narration window, one at a time;
   the performer pauses after each paragraph-scene and waits for an advance
-  (a TUI message, or a keypress in the narration window).
-- ```hlwm blocks are silent herbstclient operations — never displayed.
+  (a TUI message).
+- ```hlwm blocks are herbstclient operations — never narrated; each one is
+  auto-logged live to the narration window feed.
 - ```stage blocks move the narration and the agent's TUI window to the
-  named tag (the narration window ends up focused, ready for keypresses).
+  named tag (the narration window is display-only and is never focused).
 - ```ctl blocks are agent-side screencastctl invocations — never displayed.
 - ```bash blocks are delegated into the controlled terminal named in the
   @<session> annotation, or the most recently spawned one when omitted.
@@ -20,7 +21,7 @@ Conventions (full contract in README.md):
 ## Pre-recording setup
 
 ```ctl
-screencastctl spawn narration --advance "opencode run advance"
+screencastctl spawn narration
 screencastctl clear narration
 ```
 
@@ -45,7 +46,8 @@ in the status bar.
 
 Everything in this recording lives on the recording tag — including this
 very agent window and the narration window beside it. Moving them over now;
-from that point on, the narration window is the one to press.
+from that point on, the narration window shows the narration plus a live
+log of every hlwm operation.
 
 ```stage
 recording

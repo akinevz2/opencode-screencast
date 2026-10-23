@@ -92,24 +92,19 @@ export default Plugin.define({
       {
         name: "spawn_window",
         description:
-          "Spawn a floating herbstluftwm window: role 'narration' (audience-facing agent output) or 'command' (a controlled terminal the agent can delegate into). Persistent across window close. For narration windows, advance_command (if given) is executed whenever the user presses a key in the window — used to advance a screencast script.",
+          "Spawn a floating herbstluftwm window: role 'narration' (audience-facing agent output) or 'command' (a controlled terminal the agent can delegate into). Persistent across window close. Narration windows are strictly display-only: they take no input and never need focus, and they live-display the hlwm operation feed (every screencast_herbst call) alongside the narration.",
         input: {
           type: "object",
           properties: {
             role: { type: "string", enum: ["narration", "command"] },
             session: { type: "string", description: "Optional tmux session name; defaults per role." },
-            advance_command: {
-              type: "string",
-              description: "narration only: shell command fired on keypress in the window, e.g. 'opencode run -s <sessionID> advance'",
-            },
           },
           required: ["role"],
           additionalProperties: false,
         },
-        execute: async ({ role, session, advance_command }) => {
+        execute: async ({ role, session }) => {
           const args = ["spawn", role]
           if (session) args.push(session)
-          if (advance_command) args.push("--advance", advance_command)
           return { content: (await ctl(args)).trim() }
         },
       },
@@ -204,7 +199,7 @@ export default Plugin.define({
       {
         name: "herbst",
         description:
-          "Run a herbstclient command silently (window manager operations). These are never shown on screen. Example: args ['add', 'recording'].",
+          "Run a herbstclient command (window manager operations). Every operation is live-fed to the narration window as a timestamped log line, so the audience sees what opencode does to the window manager while broadcasting. Example: args ['add', 'recording'].",
         input: {
           type: "object",
           properties: { args: { type: "array", items: { type: "string" } } },
@@ -218,7 +213,7 @@ export default Plugin.define({
       {
         name: "attr",
         description:
-          "Read a herbstluftwm object path (GET: attr without a value) as JSON via herbstclient attr + herbstutil. Returns {value, children, attributes}. Optionally pass a jq filter to transform/shrink the result before it reaches the model. Note: herbstutil renders hlwm attribute values as JSON strings, so `.attributes.X | fromjson` yields the native JSON value. Prefer this tool over calling `herbstclient attr` through bash: the structured output is cheaper and needs no post-processing. Setting attribute values is a write — use screencast_herbst with args ['attr', path, value].",
+          "Read a herbstluftwm object path (GET: attr without a value) as JSON via herbstclient attr + herbstutil. Returns {value, children, attributes}. Optionally pass a jq filter to transform/shrink the result before it reaches the model. Note: herbstutil renders hlwm attribute values as JSON strings, so `.attributes.X | fromjson` yields the native JSON value. Prefer this tool over calling `herbstclient attr` through bash: the structured output is cheaper and needs no post-processing. Read-only: attr reads are not shown in the narration operation feed. Setting attribute values is a write — use screencast_herbst with args ['attr', path, value].",
         input: {
           type: "object",
           properties: {
@@ -263,7 +258,7 @@ export default Plugin.define({
       {
         name: "stage",
         description:
-          "Move the screencast 'backstage' windows — the floating narration window and the OpenCode TUI window (the orchestrator running the interactive session that requested the screencast) — to a workspace (tag), creating it if needed, and finish by focusing the narration window so it can receive keypresses. Keeps the whole performance on one workspace.",
+          "Move the screencast 'backstage' windows — the floating narration window and the OpenCode TUI window (the orchestrator running the interactive session that requested the screencast) — to a workspace (tag), creating it if needed. Keeps the whole performance on one workspace. The narration window is never focused: it is display-only.",
         input: {
           type: "object",
           properties: {
@@ -277,9 +272,6 @@ export default Plugin.define({
           // Pin the orchestrator to the CALLING session's project directory:
           // the TUI window running the interactive session that invoked this
           // tool is the one whose opencode process cwd is that directory.
-          // Code Mode tool calls do not carry a session context, so fall
-          // back to the session id baked into the narration window's
-          // advance command.
           let sessionDir = ""
           const resolveSessionDir = async (sessionID: string): Promise<string> => {
             try {
@@ -292,14 +284,6 @@ export default Plugin.define({
           }
           if (context?.sessionID) {
             sessionDir = await resolveSessionDir(context.sessionID)
-          }
-          if (!sessionDir) {
-            try {
-              const sid = (await ctl(["advance-session"])).trim()
-              if (sid) sessionDir = await resolveSessionDir(sid)
-            } catch {
-              /* no advance wiring configured */
-            }
           }
           // Snapshot the process table once: pid -> {ppid, argv}.
           const procs = new Map<number, { ppid: number; argv: string[] }>()
@@ -385,10 +369,6 @@ export default Plugin.define({
               await ctl(["hlwm", "move", String(tag)])
               moved.push(w)
             }
-            // Focus the narration window: after staging, the narration is
-            // the interaction point for advancing the script.
-            const focusTarget = narration[0]
-            if (focusTarget) await ctl(["hlwm", "jumpto", focusTarget])
           }
           return {
             content: JSON.stringify({
@@ -397,7 +377,6 @@ export default Plugin.define({
               narration: narration.length,
               orchestrators: orchestrators.length,
               previous_tag: prev ?? null,
-              focused: !dry_run && narration.length > 0 ? "narration" : null,
               session_dir: sessionDir || null,
             }),
           }
@@ -495,13 +474,13 @@ export default Plugin.define({
             "SCENE definition: a scene is ONE narration paragraph plus everything between it and the next paragraph (code blocks and sleep directives). Scenes are performed strictly in file order.",
             "",
             `Per turn, perform exactly ONE scene:`,
-            `1. Before the first scene: spawn the narration window (screencast_spawn_window, role=narration) with advance_command "opencode run -s ${sessionID} advance", then screencast_clear_window role=narration.`,
-            "2. Narrate the scene's paragraph verbatim (screencast_narrate). Never display anything else in the narration window.",
-            "3. Execute the scene's code blocks in order: hlwm → screencast_herbst per line; ctl → run locally via bash; bash @session → screencast_delegate with session = annotation without @ (the audience sees the typing live); stage → screencast_stage with tag = the block's argument, then continue (after staging the narration window is focused and keypresses in it advance the script).",
+            `1. Before the first scene: spawn the narration window (screencast_spawn_window, role=narration), then screencast_clear_window role=narration.`,
+            "2. Narrate the scene's paragraph verbatim (screencast_narrate). The narration window also live-displays your hlwm operations automatically — never narrate or re-display them, and never write anything else to the narration window. The narration window is display-only; never focus it.",
+            "3. Execute the scene's code blocks in order: hlwm → screencast_herbst per line (each operation auto-appears in the narration feed); ctl → run locally via bash; bash @session → screencast_delegate with session = annotation without @ (the audience sees the typing live); stage → screencast_stage with tag = the block's argument, then continue.",
             "4. Execute the scene's `sleep Ns`/`sleep Nms` directives with screencast_wait.",
             "5. END THE TURN immediately after one scene. Never perform two scenes in one turn. Never add your own commentary.",
             "",
-            `ADVANCE PROTOCOL: after each scene the recording pauses. The user advances by sending any message in the TUI (default) or by pressing a key in the narration window (which submits an automatic "advance" prompt). Any new user message means: perform the NEXT scene, reading it from the file rather than from memory.`,
+            `ADVANCE PROTOCOL: after each scene the recording pauses. The user advances by sending any message in the TUI. Any new user message means: perform the NEXT scene, reading it from the file rather than from memory.`,
             "",
             "Begin now.",
           ].join("\n")

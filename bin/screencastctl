@@ -4,8 +4,9 @@
 # The agent-facing CLI over two persistent tmux sessions:
 #
 #   narration ("read" window)  — pane continuously repaints the narration
-#                                log; the agent writes paragraphs with `say`
-#                                and verifies what is on screen with `read`.
+#                                log; the agent writes paragraphs with `say`,
+#                                verifies what is on screen with `read`, and
+#                                every `hlwm` operation is live-fed into it.
 #   command  ("write" window)  — pane runs an interactive bash; the agent
 #                                delegates commands with `send`/`run` and
 #                                captures their output with `read`.
@@ -21,10 +22,12 @@
 #   send    [role] <text>        type text + Enter into the command shell
 #   run     [role] <cmd>         send, wait for idle, print only new output
 #   read    [role] [--lines N]   capture pane (incl. scrollback) to stdout
-#   say     <text...>            append a paragraph to the narration window
+#   say     <text...>            append a paragraph (hard-wrapped, never
+#                               soft-wrapped) to the narration window
 #   clear   [role]               wipe screen + history of the given window
 #   key     [role] <keysym...>   send raw tmux key names (e.g. C-c)
-#   hlwm    <args...>            run herbstclient silently (pseudocode ops)
+#   hlwm    <args...>            run a herbstclient op; logged live to the
+#                               narration window feed
 #   attrjson <object-path> [jq]  herbstclient attr <path> as JSON (herbstutil),
 #                               optionally transformed through jq
 #   spawn-task <session> <cmd>  floating window running one command; may
@@ -40,6 +43,7 @@
 #   SCREENCAST_RUN_TIMEOUT    seconds for `run` to wait for idle (default 15)
 #   SCREENCAST_CMD_GEOM       hlwm floating geometry for the command window
 #   SCREENCAST_NARR_GEOM      hlwm floating geometry for the narration window
+#   SCREENCAST_NARR_WIDTH     narration wrap width when no pane exists yet
 set -euo pipefail
 
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
@@ -47,12 +51,13 @@ mkdir -p "$RUNTIME_DIR"
 NARR_SESSION="${SCREENCAST_NARR_SESSION:-screencast-narr}"
 CMD_SESSION="${SCREENCAST_CMD_SESSION:-screencast-cmd}"
 NARR_LOG="$RUNTIME_DIR/narration.log"
+HLWM_LOG="$RUNTIME_DIR/hlwm.log"
 RUN_TIMEOUT="${SCREENCAST_RUN_TIMEOUT:-15}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { printf 'screencastctl: %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { awk 'NR>1 && /^set -euo pipefail/{exit} NR>1{sub(/^# ?/,"");print}' "$0"; exit 0; }
 
 # Map a role keyword (or an explicit tmux session name) to a session name.
 resolve_session() {
@@ -128,8 +133,10 @@ do_ensure() {
     narration|narr|read)
       touch "$NARR_LOG"
       if ! has_session "$session"; then
-        # Presenter pane: displays the narration log and (when configured)
-        # turns a keypress into an advance signal via SC_ADVANCE_CMD.
+        # Presenter pane: display-only narration + live hlwm op feed. The
+        # window never takes input, so it never needs focus. The presenter
+        # disables autowrap (DECRST 7) in the pane: narration text is
+        # pre-wrapped by say/log_hlwm, so nothing is ever soft-wrapped.
         tmux new-session -d -s "$session" -x 160 -y 48 \
           "$SELF_DIR/screencast-presenter" "$NARR_LOG"
         record_pane "$session"
@@ -155,8 +162,10 @@ do_spawn() {
   local role="${1:-command}"; shift
   local session_arg=""
   if [[ -n "${1:-}" && "${1:-}" != "--advance" ]]; then session_arg="$1"; shift; fi
-  local advance=""
-  if [[ "${1:-}" == "--advance" ]]; then shift; advance="$*"; fi
+  # Legacy callers (plugin builds before the advance mechanism was removed)
+  # may still pass "--advance <cmd>" — consume and ignore it so it is never
+  # mistaken for a session name.
+  if [[ "${1:-}" == "--advance" ]]; then shift "$#"; fi
 
   local session class title geom wrapper
   session="$(do_ensure "$role" "$session_arg")"
@@ -179,14 +188,6 @@ do_spawn() {
       ;;
   esac
   command -v alacritty >/dev/null || die "alacritty not found"
-  if [[ -n "$advance" && "$role" == narration* ]]; then
-    # Bake the advance command into the presenter pane. set-environment +
-    # respawn so a long-lived session picks the wiring up on re-attach.
-    tmux set-environment -t "=$session" SC_ADVANCE_CMD "$advance"
-    local pt; pt="$(pane_target "$session")"
-    tmux respawn-pane -k -t "$pt" "$SELF_DIR/screencast-presenter" "$NARR_LOG"
-    record_pane "$session"
-  fi
   # Skip spawning if a window of this class is already displayed — repeat
   # spawn calls must not stack duplicate attach windows.
   if herbstclient list_clients 2>/dev/null | while read -r w; do
@@ -310,24 +311,56 @@ do_clear() {
 }
 
 # ---------------------------------------------------------------------------
-# narration — say
+# narration — say + live hlwm operation feed
 # ---------------------------------------------------------------------------
+# Live width of a session's pane; falls back to SCREENCAST_NARR_WIDTH
+# (default 160, matching the detached creation geometry) when the pane
+# cannot be queried yet.
+pane_width() {
+  local w
+  w="$(tmux display-message -p -t "$(pane_target "$1")" '#{pane_width}' 2>/dev/null || true)"
+  if [[ "$w" =~ ^[0-9]+$ ]]; then printf '%s' "$w"; else printf '%s' "${SCREENCAST_NARR_WIDTH:-160}"; fi
+}
+
+# Append a paragraph to the narration log. Text is hard-wrapped to the live
+# pane width, and the presenter disables autowrap in the pane (DECRST 7),
+# so the narration window only ever shows complete lines — the pane itself
+# never soft-wraps or clips.
+narrate_line() {
+  [[ $# -gt 0 ]] || return 0
+  touch "$NARR_LOG"
+  printf '%s\n\n' "$*" | fold -s -w "$(pane_width "$NARR_SESSION")" >> "$NARR_LOG"
+}
+
 do_say() {
   [[ $# -gt 0 ]] || die "say: missing text"
-  touch "$NARR_LOG"
-  printf '%s\n\n' "$*" >> "$NARR_LOG"
+  narrate_line "$*"
 }
 
 # ---------------------------------------------------------------------------
-# herbstluftwm — silent hlwm operations + JSON state reads
+# herbstluftwm — hlwm operations + JSON state reads
 # ---------------------------------------------------------------------------
+# Record a herbstclient operation in the durable op log and live-feed it
+# into the narration window: while broadcasting, the audience sees every
+# hlwm operation opencode performs as it happens.
+log_hlwm() {
+  local line
+  line="[$(date +%H:%M:%S)] $*"
+  printf '%s\n' "$line" >> "$HLWM_LOG"
+  narrate_line "$line"
+}
+
 do_hlwm() {
   [[ $# -gt 0 ]] || die "hlwm: missing herbstclient arguments"
-  herbstclient "$@"
+  log_hlwm "herbstclient $*"
+  local rc=0
+  herbstclient "$@" || rc=$?
+  if (( rc != 0 )); then
+    log_hlwm "→ failed (rc $rc)"
+    return "$rc"
+  fi
 }
 
-# `herbstclient attr <path>` piped through herbstutil gives the agent a
-# machine-readable {value, children, attributes} view of the object tree.
 # `herbstclient attr <path>` piped through herbstutil gives the agent a
 # machine-readable {value, children, attributes} view of the object tree.
 # An optional jq filter transforms the JSON before it is returned. Note:
@@ -442,21 +475,12 @@ do_task_wait() {
   print_task_status "$session"
 }
 
-# Print the performing session id baked into the narration window's
-# advance command (SC_ADVANCE_CMD = "opencode run -s <sid> advance").
-do_advance_session() {
-  local v
-  v="$(tmux show-environment -t "=$NARR_SESSION" SC_ADVANCE_CMD 2>/dev/null || true)"
-  if [[ "$v" =~ -s\ ([^[:space:]]+) ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-  fi
-}
-
 do_status() {  printf 'narration session : %s (%s)\n' "$NARR_SESSION" \
     "$(has_session "$NARR_SESSION" && echo alive || echo absent)"
   printf 'command  session  : %s (%s)\n' "$CMD_SESSION" \
     "$(has_session "$CMD_SESSION" && echo alive || echo absent)"
   printf 'narration log     : %s\n' "$NARR_LOG"
+  printf 'hlwm op log       : %s\n' "$HLWM_LOG"
   if has_session "$NARR_SESSION"; then
     printf 'narration pane    : %s (%s)\n' "$(pane_target "$NARR_SESSION")" "$(pane_title "$NARR_SESSION")"
   fi
@@ -478,7 +502,6 @@ case "${1:-}" in
   say)     shift; do_say "$@" ;;
   hlwm)    shift; do_hlwm "$@" ;;
   attrjson) shift; do_attrjson "$@" ;;
-  advance-session) do_advance_session ;;
   spawn-task) shift; do_spawn_task "$@" ;;
   task-status) shift; do_task_status "$@" ;;
   task-wait) shift; do_task_wait "$@" ;;

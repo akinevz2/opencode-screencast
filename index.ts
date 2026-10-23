@@ -327,6 +327,12 @@ export default Plugin.define({
             // Switch the view to the destination tag: the moved windows
             // are only useful to the audience if the monitor shows them.
             await ctl(["hlwm", "use", String(tag)])
+            // Hand focus back to the orchestrator: the narration window is
+            // display-only and must never be left holding focus, or it
+            // silently swallows the user's keystrokes.
+            if (orchestrators[0]) {
+              await ctl(["hlwm", "jumpto", orchestrators[0]])
+            }
           }
           return {
             content: JSON.stringify({

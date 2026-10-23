@@ -229,16 +229,18 @@ do_spawn() {
     # One-shot: mark the window urgent once it maps, so it draws the
     # theme.urgent look. No watcher — the window is display-only and
     # never focused (rule focus=off), so the flag simply persists.
+    # NB: every pipeline here must succeed under `set -e -o pipefail`
+    # even while the window has not mapped yet.
     local wid="" i
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
       wid="$(herbstclient list_clients 2>/dev/null | while read -r w; do
-        [[ "$(herbstclient attr "clients.$w.class" 2>/dev/null)" == "$class" ]] && echo "$w"
-      done | head -1)"
+        if [[ "$(herbstclient attr "clients.$w.class" 2>/dev/null)" == "$class" ]]; then echo "$w"; fi
+      done | head -n 1 || true)"
       [[ -n "$wid" ]] && break
       sleep 0.1
     done
     if [[ -n "$wid" ]]; then
-      herbstclient attr "clients.$wid.urgent" true 2>/dev/null
+      herbstclient attr "clients.$wid.urgent" true 2>/dev/null || true
       printf 'spawned %s window (session: %s, winid: %s)\n' "$role" "$session" "$wid"
       return 0
     fi

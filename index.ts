@@ -263,7 +263,7 @@ export default Plugin.define({
       {
         name: "stage",
         description:
-          "Move the screencast 'backstage' windows — the floating narration window and the OpenCode TUI window (the orchestrator running the interactive session that requested the screencast) — to a workspace (tag), then switch the view back to where it was. Keeps the recording workspace free of backstage windows.",
+          "Move the screencast 'backstage' windows — the floating narration window and the OpenCode TUI window (the orchestrator running the interactive session that requested the screencast) — to a workspace (tag), creating it if needed, and finish by focusing the narration window so it can receive keypresses. Keeps the whole performance on one workspace.",
         input: {
           type: "object",
           properties: {
@@ -378,14 +378,17 @@ export default Plugin.define({
           const prev = JSON.parse(await ctl(["attrjson", "monitors.focus", ".attributes.tag | fromjson"]))
           const moved: string[] = []
           if (!dry_run) {
+            // Create the destination tag if it does not exist yet.
+            await ctl(["hlwm", "silent", "add", String(tag)])
             for (const w of [...narration, ...orchestrators]) {
               await ctl(["hlwm", "jumpto", w])
-              await ctl(["hlwm", "move", tag])
+              await ctl(["hlwm", "move", String(tag)])
               moved.push(w)
             }
-            if (moved.length > 0 && prev && prev !== tag) {
-              await ctl(["hlwm", "use", String(prev)])
-            }
+            // Focus the narration window: after staging, the narration is
+            // the interaction point for advancing the script.
+            const focusTarget = narration[0]
+            if (focusTarget) await ctl(["hlwm", "jumpto", focusTarget])
           }
           return {
             content: JSON.stringify({
@@ -393,7 +396,8 @@ export default Plugin.define({
               dry_run: dry_run === true,
               narration: narration.length,
               orchestrators: orchestrators.length,
-              returned_to: prev ?? null,
+              previous_tag: prev ?? null,
+              focused: !dry_run && narration.length > 0 ? "narration" : null,
               session_dir: sessionDir || null,
             }),
           }
@@ -493,7 +497,7 @@ export default Plugin.define({
             `Per turn, perform exactly ONE scene:`,
             `1. Before the first scene: spawn the narration window (screencast_spawn_window, role=narration) with advance_command "opencode run -s ${sessionID} advance", then screencast_clear_window role=narration.`,
             "2. Narrate the scene's paragraph verbatim (screencast_narrate). Never display anything else in the narration window.",
-            "3. Execute the scene's code blocks in order: hlwm → screencast_herbst per line; ctl → run locally via bash; bash @session → screencast_delegate with session = annotation without @ (the audience sees the typing live).",
+            "3. Execute the scene's code blocks in order: hlwm → screencast_herbst per line; ctl → run locally via bash; bash @session → screencast_delegate with session = annotation without @ (the audience sees the typing live); stage → screencast_stage with tag = the block's argument, then continue (after staging the narration window is focused and keypresses in it advance the script).",
             "4. Execute the scene's `sleep Ns`/`sleep Nms` directives with screencast_wait.",
             "5. END THE TURN immediately after one scene. Never perform two scenes in one turn. Never add your own commentary.",
             "",

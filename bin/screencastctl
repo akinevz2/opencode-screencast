@@ -166,12 +166,16 @@ do_spawn() {
       title="screencast: narration"
       geom="${SCREENCAST_NARR_GEOM:-1100x620+40+760}"
       wrapper="$SELF_DIR/screencast-narration"
+      border="${SCREENCAST_NARR_BORDER:-#eeeeee}"
+      focus_rule=""   # narration never takes initial focus
       ;;
     *)
       class=ScreencastCmd
       title="screencast: shell"
       geom="${SCREENCAST_CMD_GEOM:-1100x620+1380+760}"
       wrapper="$SELF_DIR/screencast-shell"
+      border=""
+      focus_rule="focus=on"
       ;;
   esac
   command -v alacritty >/dev/null || die "alacritty not found"
@@ -192,12 +196,17 @@ do_spawn() {
     return 0
   fi
   # One-shot rule: matches only the very next window with this WM_CLASS,
-  # forcing it to float and take focus. Geometry is best-effort (this hlwm
-  # build rejects unknown rule properties like max=off, so retry without).
-  herbstclient rule once focus=on floating=on class="$class" \
+  # forcing it to float. Geometry is best-effort (this hlwm build rejects
+  # unknown rule properties like max=off, so retry without). focus_rule is
+  # empty for the narration window — it must not steal initial focus.
+  herbstclient rule once floating=on $focus_rule class="$class" \
       floating_geometry="$geom" 2>/dev/null \
-    || herbstclient rule once focus=on floating=on class="$class"
+    || herbstclient rule once floating=on $focus_rule class="$class"
   herbstclient spawn alacritty --class "$class" --title "$title" -e "$wrapper" "$session"
+  if [[ -n "$border" ]]; then
+    # Per-window theme (border + no title) via the urgent/active themes.
+    "$SELF_DIR/screencast-border" "$class" "$border" </dev/null >/dev/null 2>&1 &
+  fi
   printf 'spawned %s window (session: %s)\n' "$role" "$session"
 }
 

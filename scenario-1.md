@@ -6,6 +6,8 @@ Conventions (full contract in README.md):
   the performer pauses after each paragraph-scene and waits for an advance
   (a TUI message, or a keypress in the narration window).
 - ```hlwm blocks are silent herbstclient operations — never displayed.
+- ```stage blocks move the narration and the agent's TUI window to the
+  named tag (the narration window ends up focused, ready for keypresses).
 - ```ctl blocks are agent-side screencastctl invocations — never displayed.
 - ```bash blocks are delegated into the controlled terminal named in the
   @<session> annotation, or the most recently spawned one when omitted.
@@ -36,6 +38,18 @@ use recording
 
 The tag "recording" now exists and is active — notice the empty root frame
 in the status bar.
+
+`sleep 1s`
+
+## Moving backstage
+
+Everything in this recording lives on the recording tag — including this
+very agent window and the narration window beside it. Moving them over now;
+from that point on, the narration window is the one to press.
+
+```stage
+recording
+```
 
 `sleep 1s`
 

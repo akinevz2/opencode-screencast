@@ -83,7 +83,12 @@ screencastctl status
 ```
 
 Roles: `narration` (aliases `narr`, `read`) and `command` (aliases `cmd`,
-`shell`, `write`). A raw tmux session name is also accepted.
+`shell`, `write`). A raw tmux session name is also accepted. The narration
+window takes a `--advance <cmd>` hook fired on any keypress (debounced 2s),
+and is themed per-window by `bin/screencast-border`: a `#eeeeee` inner
+border and no title, synthesized on hlwm 0.9.5 through the `urgent` theme
+(while unfocused) and the `active` theme (while focused), since this build
+has no per-client theming and no `border_color` rule property.
 
 Environment overrides: `SCREENCAST_CMD_SESSION`, `SCREENCAST_NARR_SESSION`,
 `SCREENCAST_RUN_TIMEOUT` (default 15s), `SCREENCAST_CMD_GEOM`,

@@ -18,7 +18,6 @@
 import { Plugin } from "@opencode/plugin"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { readdirSync, readFileSync, readlinkSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -268,73 +267,15 @@ export default Plugin.define({
           required: ["tag"],
           additionalProperties: false,
         },
-        execute: async ({ tag, dry_run }, context) => {
-          // Pin the orchestrator to the CALLING session's project directory:
-          // the TUI window running the interactive session that invoked this
-          // tool is the one whose opencode process cwd is that directory.
-          let sessionDir = ""
-          const resolveSessionDir = async (sessionID: string): Promise<string> => {
-            try {
-              const session = await ctx.session.get({ sessionID })
-              const loc = (session as { location?: { directory?: string } }).location
-              return loc?.directory ?? ""
-            } catch {
-              return ""
-            }
-          }
-          if (context?.sessionID) {
-            sessionDir = await resolveSessionDir(context.sessionID)
-          }
-          // Snapshot the process table once: pid -> {ppid, argv}.
-          const procs = new Map<number, { ppid: number; argv: string[] }>()
-          for (const d of readdirSync("/proc")) {
-            if (!/^\d+$/.test(d)) continue
-            try {
-              const stat = readFileSync(`/proc/${d}/stat`, "utf8")
-              const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
-              const argv = readFileSync(`/proc/${d}/cmdline`, "utf8").split("\0").filter(Boolean)
-              procs.set(Number(d), { ppid: Number(rest[1]), argv })
-            } catch {
-              /* process vanished */
-            }
-          }
-          // Find this subtree's opencode process belonging to the calling
-          // session's project: any process whose argv[0] is opencode and
-          // whose working directory is inside the session's directory.
-          // Falls back to a bare TUI match (argv exactly ["opencode"])
-          // when the session directory is unavailable.
-          const findTuiPid = (root: number): number | null => {
-            const stack = [root]
-            const seen = new Set<number>()
-            while (stack.length) {
-              const pid = stack.pop()!
-              if (seen.has(pid)) continue
-              seen.add(pid)
-              const p = procs.get(pid)
-              if (!p) continue
-              const base = (p.argv[0] ?? "").split("/").pop()
-              if (base === "opencode") {
-                if (!sessionDir) {
-                  if (p.argv.length === 1) return pid
-                } else {
-                  try {
-                    const cwd = readlinkSync(`/proc/${pid}/cwd`)
-                    if (cwd === sessionDir || cwd.startsWith(sessionDir + "/")) return pid
-                  } catch {
-                    /* cwd unreadable */
-                  }
-                }
-              }
-              for (const [cpid, c] of procs) if (c.ppid === pid) stack.push(cpid)
-            }
-            return null
-          }
+        execute: async ({ tag, dry_run }) => {
+          // The controlling opencode window is the FOCUSED window: the user
+          // drives the session from the TUI, so it holds focus at staging
+          // time. Resolved as clients.focus — no process walking.
 
           const clients = JSON.parse(await ctl(["attrjson", "clients"]))
           const winids: string[] = Array.isArray(clients.children) ? clients.children : []
 
           const narration: string[] = []
-          const orchestrators: string[] = []
           const seenWinids = new Set<string>()
           for (const w of winids) {
             const a = JSON.parse(
@@ -356,8 +297,16 @@ export default Plugin.define({
               if (klass === "ScreencastNarr" && winTag !== tag) narration.push(winid)
               continue
             }
-            if (winTag !== tag && pid > 0 && findTuiPid(pid) !== null) orchestrators.push(winid)
           }
+
+          // The orchestrator is whatever window currently holds focus —
+          // unless that is the narration window itself (it never controls
+          // the session).
+          const focusWinid = String(
+            JSON.parse(await ctl(["attrjson", "clients.focus", ".attributes.winid | fromjson"])),
+          )
+          const orchestrators: string[] =
+            focusWinid && !narration.includes(focusWinid) ? [focusWinid] : []
 
           const prev = JSON.parse(await ctl(["attrjson", "monitors.focus", ".attributes.tag | fromjson"]))
           const moved: string[] = []
@@ -379,8 +328,8 @@ export default Plugin.define({
               dry_run: dry_run === true,
               narration: narration.length,
               orchestrators: orchestrators.length,
+              orchestrator_winid: orchestrators[0] ?? null,
               previous_tag: prev ?? null,
-              session_dir: sessionDir || null,
             }),
           }
         },

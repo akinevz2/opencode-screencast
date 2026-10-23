@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # screencast-presenter — narration window program.
 #
-# Displays the narration log as it is appended (surviving truncation, so
-# `screencastctl clear narration` just empties the view) and, when
-# SC_ADVANCE_CMD is set in the tmux session environment, converts any
-# keypress in the window into an advance signal for the performing agent:
+# FLICKER-FREE display: content is only ever appended (tail -F); nothing
+# repaints on a timer. Scrollback is purged in the background so the pane
+# stays bounded. `screencastctl clear narration` truncates the log and
+# appends an ANSI clear marker, which tail forwards to the pane — the view
+# wipes without any repaint loop.
+#
+# When SC_ADVANCE_CMD is set in the tmux session environment, any keypress
+# in the window fires it — used to advance a screencast script:
 #
 #   SC_ADVANCE_CMD="opencode run -s <sessionID> advance"
 #
@@ -39,5 +43,16 @@ key_reader() {
 }
 key_reader &
 
-# Display loop: follow the log; -F survives truncation.
-tail -n +1 -F "$LOG"
+# Background scrollback purge — invisible (only drops scrolled-off lines).
+purge_history() {
+  while :; do
+    tmux clear-history -t "${TMUX_PANE:?}" 2>/dev/null || true
+    sleep 1
+  done
+}
+purge_history &
+
+# Display loop: purely incremental; survives log truncation via -F.
+# stderr (tail's "file truncated" notice) is suppressed — the pane must
+# only ever show narration content.
+exec tail -n +1 -F "$LOG" 2>/dev/null

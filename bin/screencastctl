@@ -279,14 +279,10 @@ do_clear() {
   session="$(resolve_session "$role")"
   has_session "$session" || die "no session: $session"
   if is_narration_role "$role"; then
-    # Truncate the log, then respawn the presenter on it: the fresh process
-    # starts on the now-empty file and tmux resets the pane's visible grid
-    # and history. The pane id survives, so the recorded target stays valid
-    # and any attached window stays open.
-    : > "$NARR_LOG"
-    pt="$(pane_target "$session")"
-    tmux respawn-pane -k -t "$pt" "$SELF_DIR/screencast-presenter" "$NARR_LOG"
-    record_pane "$session"
+    # Truncate the log and append an ANSI clear marker: the presenter's
+    # tail forwards the marker to the pane, which wipes the view. No
+    # respawn — the advance keypress wiring stays alive.
+    { : > "$NARR_LOG"; printf '\033[2J\033[H'; } >> "$NARR_LOG"
   else
     pt="$(pane_target "$session")"
     tmux clear-history -t "$pt" 2>/dev/null || true

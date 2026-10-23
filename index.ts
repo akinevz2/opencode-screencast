@@ -18,6 +18,7 @@
 import { Plugin } from "@opencode/plugin"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -257,6 +258,92 @@ export default Plugin.define({
           const n = Math.max(0, Math.min(Number(ms) || 0, 600_000))
           await new Promise((r) => setTimeout(r, n))
           return { content: `waited ${n}ms` }
+        },
+      },
+      {
+        name: "stage",
+        description:
+          "Move the screencast 'backstage' windows — the floating narration window and the OpenCode TUI window (the orchestrator running the interactive session that requested the screencast) — to a workspace (tag), then switch the view back to where it was. Keeps the recording workspace free of backstage windows.",
+        input: {
+          type: "object",
+          properties: {
+            tag: { type: "string", description: "Destination herbstluftwm tag name (created if missing)." },
+          },
+          required: ["tag"],
+          additionalProperties: false,
+        },
+        execute: async ({ tag }) => {
+          // Snapshot the process table once: pid -> {ppid, argv}.
+          const procs = new Map<number, { ppid: number; argv: string[] }>()
+          for (const d of readdirSync("/proc")) {
+            if (!/^\d+$/.test(d)) continue
+            try {
+              const stat = readFileSync(`/proc/${d}/stat`, "utf8")
+              const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+              const argv = readFileSync(`/proc/${d}/cmdline`, "utf8").split("\0").filter(Boolean)
+              procs.set(Number(d), { ppid: Number(rest[1]), argv })
+            } catch {
+              /* process vanished */
+            }
+          }
+          // Does this process subtree contain a bare interactive TUI?
+          const hasBareTui = (root: number): boolean => {
+            const stack = [root]
+            const seen = new Set<number>()
+            while (stack.length) {
+              const pid = stack.pop()!
+              if (seen.has(pid)) continue
+              seen.add(pid)
+              const p = procs.get(pid)
+              if (!p) continue
+              const base = (p.argv[0] ?? "").split("/").pop()
+              if (base === "opencode" && p.argv.length === 1) return true
+              for (const c of procs.values()) if (c.ppid === pid) stack.push(c.pid)
+            }
+            return false
+          }
+
+          const clients = JSON.parse(await ctl(["attrjson", "clients"]))
+          const winids: string[] = Array.isArray(clients.children) ? clients.children : []
+
+          const narration: string[] = []
+          const orchestrators: string[] = []
+          for (const w of winids) {
+            const a = JSON.parse(
+              await ctl([
+                "attrjson",
+                `clients.${w}`,
+                ".attributes | {class, instance, pid, tag} | map_values(try fromjson catch .)",
+              ]),
+            )
+            const klass = String(a.class ?? "")
+            const pid = Number(a.pid ?? 0)
+            const winTag = String(a.tag ?? "")
+            if (klass === "ScreencastNarr" || klass === "ScreencastCmd") {
+              if (klass === "ScreencastNarr" && winTag !== tag) narration.push(w)
+              continue
+            }
+            if (winTag !== tag && pid > 0 && hasBareTui(pid)) orchestrators.push(w)
+          }
+
+          const prev = JSON.parse(await ctl(["attrjson", "monitors.focus", ".attributes.tag | fromjson"]))
+          const moved: string[] = []
+          for (const w of [...narration, ...orchestrators]) {
+            await ctl(["hlwm", "jumpto", w])
+            await ctl(["hlwm", "move", tag])
+            moved.push(w)
+          }
+          if (moved.length > 0 && prev && prev !== tag) {
+            await ctl(["hlwm", "use", String(prev)])
+          }
+          return {
+            content: JSON.stringify({
+              moved,
+              narration: narration.length,
+              orchestrators: orchestrators.length,
+              returned_to: prev ?? null,
+            }),
+          }
         },
       },
 

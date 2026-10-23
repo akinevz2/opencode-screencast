@@ -431,6 +431,15 @@ export default Plugin.define({
         description: "Perform a screencast script (markdown) live on screen",
         execute: async ({ sessionID, prompt, delivery }) => {
           const script = prompt.text.trim()
+          // Register the advance wiring: "advance" prompts are submitted to
+          // this session, and after each advance focus returns to the
+          // currently focused window (the orchestrating TUI at /screencast
+          // time). The delegation panes' output watcher reads both.
+          try {
+            await ctl(["set-advance-session", sessionID])
+          } catch {
+            /* interception unavailable — TUI-message advance still works */
+          }
           const contract = [
             "You are performing a LIVE screencast of herbstluftwm. The audience watches the screen; your narration appears in the floating narration window. The script drives everything. You perform it ONE SCENE PER TURN.",
             script ? `Script file: ${script} — read it with the read tool.` : "No script path was given; ask the user for one.",
@@ -444,7 +453,7 @@ export default Plugin.define({
             "4. Execute the scene's `sleep Ns`/`sleep Nms` directives with screencast_wait.",
             "5. END THE TURN immediately after one scene. Never perform two scenes in one turn. Never add your own commentary.",
             "",
-            `ADVANCE PROTOCOL: after each scene the recording pauses. The user advances by sending any message in the TUI. Any new user message means: perform the NEXT scene, reading it from the file rather than from memory.`,
+            `ADVANCE PROTOCOL: after each scene the recording pauses. The user advances by sending any message in the TUI, OR by typing \`echo advance\` in a delegation terminal — the pane's output watcher forwards it to this session and returns focus to the TUI. Any new user message means: perform the NEXT scene, reading it from the file rather than from memory.`,
             "",
             "Begin now.",
           ].join("\n")

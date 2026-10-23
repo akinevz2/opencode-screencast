@@ -13,6 +13,11 @@ Conventions (full contract in README.md):
 - ```bash blocks are delegated into the controlled terminal named in the
   @<session> annotation, or the most recently spawned one when omitted.
 - A line that is a lone `sleep Ns` or `sleep Nms` code span idles first.
+- Advance flow: on each advance the orchestrator (opencode) window needs
+  focus. A spawned terminal takes focus (focus=on rules); the user types
+  `echo advance` in it — the pane's output watcher forwards "advance" to
+  the orchestrator session and returns focus to the opencode window, which
+  performs the next scene.
 - Spawned windows are placed explicitly on the recording tag (tag= in the
   one-shot rule, `use recording` around the spawn) so they appear there
   regardless of which tag is currently visible.

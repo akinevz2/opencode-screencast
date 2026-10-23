@@ -120,6 +120,10 @@ PS1='\[\e[1;36m\][screencast]\[\e[0m\] \[\e[1;32m\]\w\[\e[0m\] \$ '
 trap '__sc_preexec_invoke' DEBUG
 PROMPT_COMMAND='__sc_set_title idle'
 EOF
+  # Advance interception, appended outside the quoted heredoc so the
+  # watcher path is baked in literally (safely shell-quoted).
+  printf 'tmux pipe-pane -t "$TMUX_PANE" %q 2>/dev/null\n' \
+    "$SELF_DIR/screencast-advance-watcher" >> "$rc"
   printf '%s' "$rc"
 }
 
@@ -204,6 +208,9 @@ do_spawn() {
       wrapper="$SELF_DIR/screencast-narration"
       focus_rule="focus=off"  # narration never takes focus
       style_narration_theme   # one-shot theme application, no watcher
+      # Capture the orchestrator window: at narration spawn the focused
+      # window is the TUI (the narration never takes focus).
+      herbstclient attr clients.focus.winid 2>/dev/null > "$RUNTIME_DIR/orchestrator.winid" || true
       ;;
     *)
       class=ScreencastCmd
@@ -518,6 +525,32 @@ do_task_wait() {
   print_task_status "$session"
 }
 
+# Print the performing session id baked into the narration window's
+# advance command (SC_ADVANCE_CMD = "opencode run -s <sid> advance").
+do_advance_session() {
+  local v
+  v="$(tmux show-environment -t "=$NARR_SESSION" SC_ADVANCE_CMD 2>/dev/null || true)"
+  if [[ "$v" =~ -s\ ([^[:space:]]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+# Register the advance wiring for a performing opencode session:
+#   advance.sid        — the session "advance" prompts are submitted to
+#   orchestrator.winid — the hlwm window to refocus after an advance
+#                        (captured as the currently focused window; at
+#                        /screencast time that is the orchestrating TUI)
+do_set_advance_session() {
+  [[ $# -eq 1 ]] || die "set-advance-session: exactly one session id required"
+  printf '%s\n' "$1" > "$RUNTIME_DIR/advance.sid"
+  local wid
+  wid="$(herbstclient attr clients.focus.winid 2>/dev/null || true)"
+  if [[ -n "$wid" ]]; then
+    printf '%s\n' "$wid" > "$RUNTIME_DIR/orchestrator.winid"
+  fi
+  printf 'advance.sid=%s orchestrator=%s\n' "$1" "${wid:-none}"
+}
+
 do_status() {  printf 'narration session : %s (%s)\n' "$NARR_SESSION" \
     "$(has_session "$NARR_SESSION" && echo alive || echo absent)"
   printf 'command  session  : %s (%s)\n' "$CMD_SESSION" \
@@ -545,6 +578,7 @@ case "${1:-}" in
   say)     shift; do_say "$@" ;;
   hlwm)    shift; do_hlwm "$@" ;;
   attrjson) shift; do_attrjson "$@" ;;
+  set-advance-session) shift; do_set_advance_session "$@" ;;
   spawn-task) shift; do_spawn_task "$@" ;;
   task-status) shift; do_task_status "$@" ;;
   task-wait) shift; do_task_wait "$@" ;;

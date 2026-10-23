@@ -49,6 +49,21 @@ in the status bar.
 
 `sleep 1s`
 
+## The layout
+
+Before the demo windows appear, the layout gets fixed: a horizontal split
+puts the orchestrator — this very window — in the right half of the screen,
+leaving the left half free for the demo windows so the floating terminals
+never obscure the agent.
+
+```hlwm
+split h 0.5
+focus left
+shift right
+```
+
+`sleep 1s`
+
 ## Backstage on the recording tag
 
 Everything in this recording lives on the recording tag — including this
@@ -79,6 +94,7 @@ the tiling layout instead of floating.
 
 ```hlwm
 use recording
+focus left
 spawn alacritty --class ScreencastCmd --title screencast-term2 -e /home/kine/development/system/screencast_scripts/bin/screencast-shell screencast-term2
 ```
 

@@ -300,10 +300,11 @@ export default Plugin.define({
               /* process vanished */
             }
           }
-          // Find this subtree's bare interactive TUI (argv exactly
-          // ["opencode"]) whose working directory belongs to this
-          // session's project — that pins the orchestrator for THIS
-          // screencast when several TUIs are open.
+          // Find this subtree's opencode process belonging to the calling
+          // session's project: any process whose argv[0] is opencode and
+          // whose working directory is inside the session's directory.
+          // Falls back to a bare TUI match (argv exactly ["opencode"])
+          // when the session directory is unavailable.
           const findTuiPid = (root: number): number | null => {
             const stack = [root]
             const seen = new Set<number>()
@@ -314,13 +315,16 @@ export default Plugin.define({
               const p = procs.get(pid)
               if (!p) continue
               const base = (p.argv[0] ?? "").split("/").pop()
-              if (base === "opencode" && p.argv.length === 1) {
-                if (!sessionDir) return pid
-                try {
-                  const cwd = readlinkSync(`/proc/${pid}/cwd`)
-                  if (cwd === sessionDir || cwd.startsWith(sessionDir + "/")) return pid
-                } catch {
-                  /* cwd unreadable */
+              if (base === "opencode") {
+                if (!sessionDir) {
+                  if (p.argv.length === 1) return pid
+                } else {
+                  try {
+                    const cwd = readlinkSync(`/proc/${pid}/cwd`)
+                    if (cwd === sessionDir || cwd.startsWith(sessionDir + "/")) return pid
+                  } catch {
+                    /* cwd unreadable */
+                  }
                 }
               }
               for (const [cpid, c] of procs) if (c.ppid === pid) stack.push(cpid)
@@ -333,14 +337,20 @@ export default Plugin.define({
 
           const narration: string[] = []
           const orchestrators: string[] = []
+          const seenWinids = new Set<string>()
           for (const w of winids) {
             const a = JSON.parse(
               await ctl([
                 "attrjson",
                 `clients.${w}`,
-                ".attributes | {class, instance, pid, tag} | map_values(try fromjson catch .)",
+                ".attributes | {class, instance, pid, tag, winid} | map_values(try fromjson catch .)",
               ]),
             )
+            // hlwm exposes a `focus` alias among the children — dedupe on
+            // the real winid so a focused window is never counted twice.
+            const winid = String(a.winid ?? w)
+            if (seenWinids.has(winid)) continue
+            seenWinids.add(winid)
             const klass = String(a.class ?? "")
             const pid = Number(a.pid ?? 0)
             const winTag = String(a.tag ?? "")

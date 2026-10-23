@@ -165,10 +165,14 @@ do_ensure() {
 # from the autostart config) and inner_width is zeroed: the padding reads
 # as empty desktop space around a thin white outline.
 style_narration_theme() {
-  local outer="${SCREENCAST_NARR_BORDER:-#2c001e}" inner="${SCREENCAST_NARR_INNER_COLOR:-#eeeeee}" pad="${SCREENCAST_NARR_PADDING:-25}"
-  herbstclient attr theme.urgent.outer_color "$outer" 2>/dev/null
+  # Decoration anatomy (hlwm): theme.color paints the decoration slab
+  # (padding + title area), inner_color/inner_width a ring around the
+  # content, outer_color/outer_width the outermost ring. The narration
+  # look = aubergine slab + #eeeeee outer ring, no title, no inner ring.
+  local slab="${SCREENCAST_NARR_PADDING_COLOR:-#2c001e}" ring="${SCREENCAST_NARR_BORDER:-#eeeeee}" pad="${SCREENCAST_NARR_PADDING:-25}"
+  herbstclient attr theme.urgent.color "$slab" 2>/dev/null
+  herbstclient attr theme.urgent.outer_color "$ring" 2>/dev/null
   herbstclient attr theme.urgent.outer_width "${SCREENCAST_NARR_BORDER_W:-3}" 2>/dev/null
-  herbstclient attr theme.urgent.inner_color "$inner" 2>/dev/null
   herbstclient attr theme.urgent.inner_width 0 2>/dev/null
   herbstclient attr theme.urgent.padding_top "$pad" 2>/dev/null
   herbstclient attr theme.urgent.padding_bottom "$pad" 2>/dev/null

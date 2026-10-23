@@ -58,6 +58,7 @@ fi
 # Save everything we touch, per theme sub-object.
 saved_active_outer_w="$(herb attr theme.active.outer_width 2>/dev/null || printf '')"
 saved_active_outer_c="$(herb attr theme.active.outer_color 2>/dev/null || printf '')"
+saved_active_inner_w="$(herb attr theme.active.inner_width 2>/dev/null || printf '')"
 saved_active_pad_t="$(herb attr theme.active.padding_top 2>/dev/null || printf '')"
 saved_active_pad_b="$(herb attr theme.active.padding_bottom 2>/dev/null || printf '')"
 saved_active_pad_l="$(herb attr theme.active.padding_left 2>/dev/null || printf '')"
@@ -65,6 +66,7 @@ saved_active_pad_r="$(herb attr theme.active.padding_right 2>/dev/null || printf
 saved_active_title_when="$(herb attr theme.active.title_when 2>/dev/null || printf '')"
 saved_urgent_outer_w="$(herb attr theme.urgent.outer_width 2>/dev/null || printf '')"
 saved_urgent_outer_c="$(herb attr theme.urgent.outer_color 2>/dev/null || printf '')"
+saved_urgent_inner_w="$(herb attr theme.urgent.inner_width 2>/dev/null || printf '')"
 saved_urgent_pad_t="$(herb attr theme.urgent.padding_top 2>/dev/null || printf '')"
 saved_urgent_pad_b="$(herb attr theme.urgent.padding_bottom 2>/dev/null || printf '')"
 saved_urgent_pad_l="$(herb attr theme.urgent.padding_left 2>/dev/null || printf '')"
@@ -74,6 +76,7 @@ saved_urgent_title_when="$(herb attr theme.urgent.title_when 2>/dev/null || prin
 restore_active() {
   [[ -n "$saved_active_outer_w" ]] && herb attr theme.active.outer_width "$saved_active_outer_w" 2>/dev/null
   [[ -n "$saved_active_outer_c" ]] && herb attr theme.active.outer_color "$saved_active_outer_c" 2>/dev/null
+  [[ -n "$saved_active_inner_w" ]] && herb attr theme.active.inner_width "$saved_active_inner_w" 2>/dev/null
   [[ -n "$saved_active_pad_t" ]] && herb attr theme.active.padding_top "$saved_active_pad_t" 2>/dev/null
   [[ -n "$saved_active_pad_b" ]] && herb attr theme.active.padding_bottom "$saved_active_pad_b" 2>/dev/null
   [[ -n "$saved_active_pad_l" ]] && herb attr theme.active.padding_left "$saved_active_pad_l" 2>/dev/null
@@ -88,6 +91,7 @@ cleanup() {
   restore_active
   herb attr theme.urgent.outer_width "$saved_urgent_outer_w" 2>/dev/null
   herb attr theme.urgent.outer_color "$saved_urgent_outer_c" 2>/dev/null
+  herb attr theme.urgent.inner_width "$saved_urgent_inner_w" 2>/dev/null
   herb attr theme.urgent.padding_top "$saved_urgent_pad_t" 2>/dev/null
   herb attr theme.urgent.padding_bottom "$saved_urgent_pad_b" 2>/dev/null
   herb attr theme.urgent.padding_left "$saved_urgent_pad_l" 2>/dev/null
@@ -99,9 +103,11 @@ trap cleanup EXIT INT TERM
 
 # One-time: urgent windows (i.e. the unfocused narration) draw the look —
 # COLOR border plus PADDING px of space around the content, via the
-# dedicated theme padding attributes.
+# dedicated theme padding attributes. inner_width is zeroed: on top of
+# PADDING padding it reads as a humongous border.
 herb attr theme.urgent.outer_color "$COLOR" 2>/dev/null
 herb attr theme.urgent.outer_width "$BORDER_W" 2>/dev/null
+herb attr theme.urgent.inner_width 0 2>/dev/null
 herb attr theme.urgent.padding_top "$PADDING" 2>/dev/null
 herb attr theme.urgent.padding_bottom "$PADDING" 2>/dev/null
 herb attr theme.urgent.padding_left "$PADDING" 2>/dev/null
@@ -121,6 +127,7 @@ apply_state() {
   if [[ "$focus_cls" == "$CLASS" ]]; then
     herb attr theme.active.outer_color "$COLOR" 2>/dev/null
     herb attr theme.active.outer_width "$BORDER_W" 2>/dev/null
+    herb attr theme.active.inner_width 0 2>/dev/null
     herb attr theme.active.padding_top "$PADDING" 2>/dev/null
     herb attr theme.active.padding_bottom "$PADDING" 2>/dev/null
     herb attr theme.active.padding_left "$PADDING" 2>/dev/null

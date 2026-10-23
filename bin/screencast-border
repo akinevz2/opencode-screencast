@@ -25,10 +25,27 @@ mkdir -p "$RUNTIME_DIR"
 
 herb() { herbstclient "$@"; }
 
-# Dedupe via a lock directory (pgrep -f matches parent cmdlines and would
-# make the watcher kill itself under wrapper processes).
+# Dedupe via a lock directory holding the owner pid; a stale lock (dead
+# owner) is reclaimed. pgrep is not used — it matches parent cmdlines and
+# would make the watcher kill itself under wrapper processes.
 LOCK="$RUNTIME_DIR/screencast-border.$CLASS.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
+acquire_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then
+    printf '%s\n' "$$" > "$LOCK/pid"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    rm -rf "$LOCK"
+    if mkdir "$LOCK" 2>/dev/null; then
+      printf '%s\n' "$$" > "$LOCK/pid"
+      return 0
+    fi
+  fi
+  return 1
+}
+if ! acquire_lock; then
   exit 0  # already running
 fi
 
@@ -56,7 +73,7 @@ cleanup() {
   herb attr theme.urgent.title_when "$saved_urgent_title_when" 2>/dev/null
   rmdir "$LOCK" 2>/dev/null
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # One-time: urgent windows (i.e. the unfocused narration) draw the look.
 herb attr theme.urgent.outer_color "$COLOR" 2>/dev/null

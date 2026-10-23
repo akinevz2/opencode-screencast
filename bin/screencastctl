@@ -205,7 +205,9 @@ do_spawn() {
   herbstclient spawn alacritty --class "$class" --title "$title" -e "$wrapper" "$session"
   if [[ -n "$border" ]]; then
     # Per-window theme (border + no title) via the urgent/active themes.
-    "$SELF_DIR/screencast-border" "$class" "$border" </dev/null >/dev/null 2>&1 &
+    # setsid detaches the watcher from the invoking process group so it
+    # survives the plugin's execFile child lifecycle.
+    setsid "$SELF_DIR/screencast-border" "$class" "$border" </dev/null >/dev/null 2>&1 &
   fi
   printf 'spawned %s window (session: %s)\n' "$role" "$session"
 }

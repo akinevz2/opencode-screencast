@@ -369,10 +369,10 @@ export default Plugin.define({
             const pid = Number(a.pid ?? 0)
             const winTag = String(a.tag ?? "")
             if (klass === "ScreencastNarr" || klass === "ScreencastCmd") {
-              if (klass === "ScreencastNarr" && winTag !== tag) narration.push(w)
+              if (klass === "ScreencastNarr" && winTag !== tag) narration.push(winid)
               continue
             }
-            if (winTag !== tag && pid > 0 && findTuiPid(pid) !== null) orchestrators.push(w)
+            if (winTag !== tag && pid > 0 && findTuiPid(pid) !== null) orchestrators.push(winid)
           }
 
           const prev = JSON.parse(await ctl(["attrjson", "monitors.focus", ".attributes.tag | fromjson"]))

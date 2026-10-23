@@ -258,7 +258,7 @@ export default Plugin.define({
       {
         name: "stage",
         description:
-          "Move the screencast 'backstage' windows — the floating narration window and the OpenCode TUI window (the orchestrator running the interactive session that requested the screencast) — to a workspace (tag), creating it if needed. Keeps the whole performance on one workspace. The narration window is never focused: it is display-only.",
+          "Move the screencast 'backstage' windows — the floating narration window and the OpenCode TUI window (the orchestrator running the interactive session that requested the screencast) — to a workspace (tag), creating it if needed, and switch the view to that tag. Keeps the whole performance on one workspace. The narration window is never focused: it is display-only.",
         input: {
           type: "object",
           properties: {
@@ -369,6 +369,9 @@ export default Plugin.define({
               await ctl(["hlwm", "move", String(tag)])
               moved.push(w)
             }
+            // Switch the view to the destination tag: the moved windows
+            // are only useful to the audience if the monitor shows them.
+            await ctl(["hlwm", "use", String(tag)])
           }
           return {
             content: JSON.stringify({

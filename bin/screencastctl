@@ -431,8 +431,17 @@ do_task_wait() {
   print_task_status "$session"
 }
 
-do_status() {
-  printf 'narration session : %s (%s)\n' "$NARR_SESSION" \
+# Print the performing session id baked into the narration window's
+# advance command (SC_ADVANCE_CMD = "opencode run -s <sid> advance").
+do_advance_session() {
+  local v
+  v="$(tmux show-environment -t "=$NARR_SESSION" SC_ADVANCE_CMD 2>/dev/null || true)"
+  if [[ "$v" =~ -s\ ([^[:space:]]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+do_status() {  printf 'narration session : %s (%s)\n' "$NARR_SESSION" \
     "$(has_session "$NARR_SESSION" && echo alive || echo absent)"
   printf 'command  session  : %s (%s)\n' "$CMD_SESSION" \
     "$(has_session "$CMD_SESSION" && echo alive || echo absent)"
@@ -458,6 +467,7 @@ case "${1:-}" in
   say)     shift; do_say "$@" ;;
   hlwm)    shift; do_hlwm "$@" ;;
   attrjson) shift; do_attrjson "$@" ;;
+  advance-session) do_advance_session ;;
   spawn-task) shift; do_spawn_task "$@" ;;
   task-status) shift; do_task_status "$@" ;;
   task-wait) shift; do_task_wait "$@" ;;

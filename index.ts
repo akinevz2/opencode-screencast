@@ -277,14 +277,28 @@ export default Plugin.define({
           // Pin the orchestrator to the CALLING session's project directory:
           // the TUI window running the interactive session that invoked this
           // tool is the one whose opencode process cwd is that directory.
+          // Code Mode tool calls do not carry a session context, so fall
+          // back to the session id baked into the narration window's
+          // advance command.
           let sessionDir = ""
-          if (context?.sessionID) {
+          const resolveSessionDir = async (sessionID: string): Promise<string> => {
             try {
-              const session = await ctx.session.get({ sessionID: context.sessionID })
+              const session = await ctx.session.get({ sessionID })
               const loc = (session as { location?: { directory?: string } }).location
-              sessionDir = loc?.directory ?? ""
+              return loc?.directory ?? ""
             } catch {
-              /* fall back to no pinning */
+              return ""
+            }
+          }
+          if (context?.sessionID) {
+            sessionDir = await resolveSessionDir(context.sessionID)
+          }
+          if (!sessionDir) {
+            try {
+              const sid = (await ctl(["advance-session"])).trim()
+              if (sid) sessionDir = await resolveSessionDir(sid)
+            } catch {
+              /* no advance wiring configured */
             }
           }
           // Snapshot the process table once: pid -> {ppid, argv}.

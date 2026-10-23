@@ -40,20 +40,18 @@ use recording
 The tag "recording" now exists and is active — notice the empty root frame
 in the status bar.
 
-`sleep 1s`
-
-## Moving backstage
-
-Everything in this recording lives on the recording tag — including this
-very agent window and the narration window beside it. Moving them over now;
-from that point on, the narration window shows the narration plus a live
-log of every hlwm operation.
-
 ```stage
 recording
 ```
 
 `sleep 1s`
+
+## Backstage on the recording tag
+
+Everything in this recording lives on the recording tag — including this
+very agent window and the narration window beside it, which moved over
+with us the moment the tag was created. From that point on, the narration
+window shows the narration plus a live log of every hlwm operation.
 
 ## A floating controlled terminal
 

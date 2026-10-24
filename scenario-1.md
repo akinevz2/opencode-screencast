@@ -58,7 +58,6 @@ never obscure the agent.
 
 ```hlwm
 split h 0.5
-focus left
 shift right
 ```
 

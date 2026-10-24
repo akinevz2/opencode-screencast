@@ -99,6 +99,12 @@ screencastctl hlwm    <args...>                       # herbstclient op; live-fe
 screencastctl attrjson <object-path> [jq-filter]      # attr tree as JSON,
                                                       # optionally jq-filtered
                                                       # (reads are not fed)
+screencastctl spawn-task <session> <cmd>              # floating window running one
+                                                      # command; durably registered,
+                                                      # sentinel-based completion
+screencastctl task-status <session>                   # STATE/EXIT/OUTPUT(base64):
+                                                      # absent|running|done|lost
+screencastctl task-wait [timeout] <session>           # poll until done/lost/timeout
 screencastctl status
 ```
 

@@ -31,10 +31,16 @@
 #   attrjson <object-path> [jq]  herbstclient attr <path> as JSON (herbstutil),
 #                               optionally transformed through jq
 #   spawn-task <session> <cmd>  floating window running one command; may
-#                               prompt (e.g. sudo) — title protocol reports
-#                               running -> done:<rc>, then drops to a shell
+#                               prompt (e.g. sudo) — the session is durably
+#                               registered at spawn and completion is
+#                               signaled by an exit sentinel (running ->
+#                               done:<rc>, then drops to a shell); a
+#                               session that vanishes before finishing
+#                               reports "lost"
 #   task-status <session>       STATE/EXIT/OUTPUT(base64) for a task session
-#   task-wait [timeout] <s>     poll until the task finishes (default 30s)
+#                               (state: absent|running|done|lost)
+#   task-wait [timeout] <s>     poll until the task finishes or the session
+#                               vanishes (default 30s)
 #   status                        overview of sessions, panes and log
 #
 # Environment overrides:
@@ -50,6 +56,7 @@ RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
 mkdir -p "$RUNTIME_DIR"
 NARR_SESSION="${SCREENCAST_NARR_SESSION:-screencast-narr}"
 CMD_SESSION="${SCREENCAST_CMD_SESSION:-screencast-cmd}"
+TASK_SESSION="${SCREENCAST_TASK_SESSION:-screencast-task}"
 NARR_LOG="$RUNTIME_DIR/narration.log"
 HLWM_LOG="$RUNTIME_DIR/hlwm.log"
 RUN_TIMEOUT="${SCREENCAST_RUN_TIMEOUT:-15}"
@@ -465,14 +472,31 @@ write_task_script() {
 
 do_spawn_task() {
   local session cmd geom="${SCREENCAST_TASK_GEOM:-1100x620+700+400}"
-  if [[ $# -ge 2 ]]; then session="$1"; shift; else session="${SCREENCAST_TASK_SESSION:-screencast-task}"; fi
+  if [[ $# -ge 2 ]]; then session="$1"; shift; else session="$TASK_SESSION"; fi
   [[ $# -gt 0 ]] || die "spawn-task: missing command"
   cmd="$*"
   local script; script="$(write_task_script "$session" "$cmd")"
+  # Durable registration BEFORE any window work: from this moment the
+  # session id exists as far as task_status is concerned — a registered
+  # task must never poll as "absent" (absent = never spawned).
+  printf 'started=%s\n' "$(date +%s)" > "$RUNTIME_DIR/$session.task"
+  : > "$RUNTIME_DIR/$session.output.log"
   # Restart cleanly if an instance of this task session already exists.
   tmux kill-session -t "=$session" 2>/dev/null || true
   tmux new-session -d -s "$session" bash "$script"
+  # The session must be queryable now; if it died instantly (e.g. the
+  # command could not even start), say so here instead of leaving the
+  # agent polling a ghost — task_status will report "lost" for it.
+  if ! has_session "$session"; then
+    sleep 0.2
+    tmux new-session -d -s "$session" bash "$script" 2>/dev/null || true
+    has_session "$session" || die "spawn-task: session '$session' died immediately after creation"
+  fi
   record_pane "$session"
+  # Persistent pane output log: keeps the output tail available to
+  # task_status even after the window/session is gone.
+  tmux pipe-pane -t "$(pane_target "$session")" \
+    "cat >> '$RUNTIME_DIR/$session.output.log'" 2>/dev/null || true
   command -v alacritty >/dev/null || die "alacritty not found"
   herbstclient rule once focus=on floating=on class=ScreencastCmd \
       floating_geometry="$geom" 2>/dev/null \
@@ -483,45 +507,69 @@ do_spawn_task() {
 }
 
 # STATE / EXIT / OUTPUT(base64) — base64 keeps the tail JSON-safe.
-# The task script durably records its exit code in $session.exit, so the
-# code survives even when the transient done:<rc> pane title is missed.
+# Completion is signaled by the durable exit sentinel ($session.exit,
+# written by the task script the moment the command finishes), NOT by the
+# transient pane title: the title can be missed entirely and is re-set to
+# "running" by the delegation shell after every later delegated command.
+# The spawn-time registry ($session.task) distinguishes a registered task
+# whose session vanished before finishing ("lost" — window closed /
+# session died mid-run) from one that was never spawned ("absent").
 print_task_status() {
   local session="$1" state="absent" exit="" tail_b64=""
+  local reg="$RUNTIME_DIR/$session.task"
+  local exitfile="$RUNTIME_DIR/$session.exit"
+  local outlog="$RUNTIME_DIR/$session.output.log"
   if has_session "$session"; then
-    local title exitfile="$RUNTIME_DIR/$session.exit"
-    title="$(pane_title "$session")"
-    case "$title" in
-      running) state="running" ;;
-      done:*)  state="done"; exit="${title#done:}" ;;
-      idle)    state="done" ;;
-      "")      state="unknown" ;;
-      *)       state="$title" ;;
-    esac
-    if [[ -z "$exit" && -r "$exitfile" ]]; then
+    if [[ -r "$exitfile" ]]; then
+      # Sentinel wins: the task is finished even when the delegation
+      # shell has since retitled the pane back to "running".
+      state="done"
       exit="$(<"$exitfile")"
+    else
+      local title
+      title="$(pane_title "$session")"
+      case "$title" in
+        done:*)  state="done"; exit="${title#done:}" ;;
+        idle)    state="done" ;;
+        *)       state="running" ;;
+      esac
     fi
-    tail_b64="$(capture "$session" 20 | tail -n 20 | base64 -w0)"
+    tail_b64="$(capture "$session" 20 | tail -n 20 | base64 -w0 || true)"
+  elif [[ -r "$exitfile" ]]; then
+    # Finished, and the window was closed afterwards — still done.
+    state="done"
+    exit="$(<"$exitfile")"
+  elif [[ -r "$reg" ]]; then
+    # Registered but vanished before the sentinel appeared: the window
+    # was closed mid-run (or the session died). Terminal state.
+    state="lost"
+  fi
+  if [[ -z "$tail_b64" && -r "$outlog" && -s "$outlog" ]]; then
+    tail_b64="$(tail -n 20 "$outlog" | base64 -w0)"
   fi
   printf 'STATE %s\nEXIT %s\nOUTPUT %s\n' "$state" "${exit:--}" "${tail_b64:--}"
 }
 
 do_task_status() {
-  print_task_status "$(resolve_session "${1:-screencast-task}")"
+  print_task_status "$(resolve_session "${1:-$TASK_SESSION}")"
 }
 
 do_task_wait() {
   local timeout="${SCREENCAST_TASK_TIMEOUT:-30}" session
   if [[ $# -ge 2 ]]; then timeout="$1"; shift; fi
-  session="$(resolve_session "${1:-screencast-task}")"
-  if has_session "$session"; then
-    local pt deadline=$(( $(date +%s) + timeout )) title
-    pt="$(pane_target "$session")"
-    while (( $(date +%s) < deadline )); do
-      title="$(tmux display-message -p -t "$pt" '#{pane_title}' 2>/dev/null || true)"
-      case "$title" in done:*|idle) break ;; esac
-      sleep 0.25
-    done
-  fi
+  session="$(resolve_session "${1:-$TASK_SESSION}")"
+  local exitfile="$RUNTIME_DIR/$session.exit"
+  local deadline=$(( $(date +%s) + timeout ))
+  # Poll the durable exit sentinel, not the pane title: the title is
+  # transient (and retitled by the delegation shell), while the sentinel
+  # appears exactly once, when the command finishes. A session that
+  # vanishes mid-wait also stops the poll immediately — task_status then
+  # reports done (sentinel present) or lost (window closed mid-run).
+  while (( $(date +%s) < deadline )); do
+    [[ -r "$exitfile" ]] && break
+    has_session "$session" || break
+    sleep 0.25
+  done
   print_task_status "$session"
 }
 
@@ -564,6 +612,9 @@ do_status() {  printf 'narration session : %s (%s)\n' "$NARR_SESSION" \
     printf 'command pane      : %s (%s / %s)\n' "$(pane_target "$CMD_SESSION")" \
       "$(pane_title "$CMD_SESSION")" \
       "$(tmux display-message -p -t "$(pane_target "$CMD_SESSION")" '#{pane_current_command}')"
+  fi
+  if has_session "$TASK_SESSION"; then
+    printf 'task pane         : %s (%s)\n' "$(pane_target "$TASK_SESSION")" "$(pane_title "$TASK_SESSION")"
   fi
 }
 

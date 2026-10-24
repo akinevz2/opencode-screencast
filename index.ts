@@ -7,9 +7,11 @@
  * CLI that ships beside this file in bin/.
  *
  * Feature 2 (task pipeline): spawn a terminal window running a single
- * command that may request user input (e.g. sudo), with title-protocol
- * based completion detection (running -> done:<rc>) so the agent can wait
- * for the task instead of guessing.
+ * command that may request user input (e.g. sudo). The task session is
+ * durably registered at spawn and completion is signaled by an exit
+ * sentinel rather than the transient window title (running -> done:<rc>,
+ * or "lost" when the window is closed before the command finishes) so
+ * the agent can wait for the task instead of guessing.
  *
  * Layout contract: this plugin expects bin/screencastctl next to index.ts.
  * When installed as a submodule of the OpenCode config directory
@@ -366,7 +368,7 @@ export default Plugin.define({
       {
         name: "run_task",
         description:
-          "Spawn a floating terminal running a single command that may request user input (e.g. sudo). The window title reports 'running' while it executes and 'done:<rc>' when it finishes, then drops to a delegation shell. Returns the session id used for task_status/task_wait.",
+          "Spawn a floating terminal running a single command that may request user input (e.g. sudo). The session is durably registered the moment it is created, so task_status reports it immediately (never 'absent' for a returned session id). Completion is signaled by a durable exit sentinel, not the transient window title: state 'running' while it executes, 'done:<rc>' when it finishes, then the window drops to a delegation shell. If the window is closed before the command finishes, task_status reports state 'lost'. Returns the session id used for task_status/task_wait.",
         input: {
           type: "object",
           properties: {
@@ -387,7 +389,7 @@ export default Plugin.define({
       {
         name: "task_status",
         description:
-          "Poll a task session: state (absent/running/done), exit code when done, and the last lines of visible output.",
+          "Poll a task session: state (absent = never spawned, running, done = finished with the real exit code, lost = the session vanished before finishing, e.g. the task window was closed mid-run), exit code when done, and the last lines of visible output.",
         input: {
           type: "object",
           properties: { session: { type: "string" } },
@@ -402,7 +404,7 @@ export default Plugin.define({
       {
         name: "task_wait",
         description:
-          "Wait until a task session finishes (or the timeout elapses), then return state, exit code and output tail.",
+          "Wait until a task session finishes (done), disappears mid-run (lost), or the timeout elapses, then return state, exit code and output tail.",
         input: {
           type: "object",
           properties: {

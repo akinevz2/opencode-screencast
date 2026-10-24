@@ -69,13 +69,13 @@ screencastctl spawn narration
 Before the demo windows appear, the layout gets fixed: a horizontal split
 puts the orchestrator — this very window — in the right half of the screen,
 leaving the left half free for the demo windows so the floating terminals
-never obscure the agent.
+never obscure the agent. The split leaves focus on the orchestrator's
+frame, ready for the advance.
 
 ```hlwm
 split h 0.5
 shift right
 split v 0.5
-focus up
 ```
 
 `sleep 1s`

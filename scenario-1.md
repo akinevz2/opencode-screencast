@@ -17,6 +17,9 @@ Conventions (full contract in README.md):
   consecutively in a single turn — no advance is requested until a usable
   layout exists (narration spawned, split in place). The first pause
   happens right after the layout scene.
+- Pause cadence: ONE scene per advance. The run-up above is the only
+  consecutive stretch — every scene after the layout scene pauses and waits
+  for the next advance before performing.
 - Advance flow: on each advance the orchestrator (opencode) window needs
   focus. A spawned terminal takes focus (focus=on rules); the user types
   `echo advance` in it — the pane's output watcher forwards "advance" to

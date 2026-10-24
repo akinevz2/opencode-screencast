@@ -13,6 +13,10 @@ Conventions (full contract in README.md):
 - ```bash blocks are delegated into the controlled terminal named in the
   @<session> annotation, or the most recently spawned one when omitted.
 - A line that is a lone `sleep Ns` or `sleep Nms` code span idles first.
+- No-pause run-up: the scenes from staging through the layout are performed
+  consecutively in a single turn — no advance is requested until a usable
+  layout exists (narration spawned, split in place). The first pause
+  happens right after the layout scene.
 - Advance flow: on each advance the orchestrator (opencode) window needs
   focus. A spawned terminal takes focus (focus=on rules); the user types
   `echo advance` in it — the pane's output watcher forwards "advance" to
@@ -28,7 +32,7 @@ Conventions (full contract in README.md):
 Hello, and welcome back. In this segment we create a fresh workspace called
 "recording" and watch how new windows behave under herbstluftwm's tiling.
 
-`sleep 2s`
+`sleep 1s`
 
 ## Creating the tag
 
@@ -54,13 +58,13 @@ moving, no focusing, its urgent look intact from the first frame.
 rule once tag=recording focus=off
 ```
 
-```ctl
-screencastctl spawn narration
-```
-
 `sleep 1s`
 
 ## The layout
+
+```ctl
+screencastctl spawn narration
+```
 
 Before the demo windows appear, the layout gets fixed: a horizontal split
 puts the orchestrator — this very window — in the right half of the screen,

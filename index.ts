@@ -464,7 +464,7 @@ export default Plugin.define({
             "2. Narrate the scene's paragraph verbatim (screencast_narrate). The narration window also live-displays your hlwm operations automatically — never narrate or re-display them, and never write anything else to the narration window. The narration window is display-only; never focus it.",
             "3. Execute the scene's code blocks in order: hlwm → screencast_herbst per line (each operation auto-appears in the narration feed); ctl → run locally via bash; bash @session → screencast_delegate with session = annotation without @ (the audience sees the typing live); stage → screencast_stage with tag = the block's argument, then continue.",
             "4. Execute the scene's `sleep Ns`/`sleep Nms` directives with screencast_wait.",
-            "5. END THE TURN immediately after one scene. Never perform two scenes in one turn. Never add your own commentary.",
+            "5. END THE TURN immediately after one scene — except where the script's conventions declare a no-pause run-up (e.g. staging through the layout): perform those scenes consecutively, then pause. Never add your own commentary.",
             "",
             `ADVANCE PROTOCOL: after each scene the recording pauses. The user advances by sending any message in the TUI, OR by typing \`echo advance\` in a delegation terminal — the pane's output watcher forwards it to this session and returns focus to the TUI. Any new user message means: perform the NEXT scene, reading it from the file rather than from memory.`,
             "",

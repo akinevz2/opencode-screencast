@@ -18,17 +18,12 @@ Conventions (full contract in README.md):
   `echo advance` in it — the pane's output watcher forwards "advance" to
   the orchestrator session and returns focus to the opencode window, which
   performs the next scene.
-- Spawned windows are placed explicitly on the recording tag (tag= in the
-  one-shot rule, `use recording` around the spawn) so they appear there
-  regardless of which tag is currently visible.
+- The narration window is spawned directly on the recording tag (a
+  `rule once tag=recording focus=off` pre-rule merges with the spawn rule),
+  so it is never moved and its urgent look is never disturbed.
 -->
 
 ## Pre-recording setup
-
-```ctl
-screencastctl spawn narration
-screencastctl clear narration
-```
 
 Hello, and welcome back. In this segment we create a fresh workspace called
 "recording" and watch how new windows behave under herbstluftwm's tiling.
@@ -37,8 +32,9 @@ Hello, and welcome back. In this segment we create a fresh workspace called
 
 ## Creating the tag
 
-The tag is created and we move onto it in one step — staging must happen
-while the agent window still holds focus.
+The tag is created and the agent window moves onto it in one step — staging
+must happen while the agent window still holds focus. The narration window
+is not spawned yet: it will join us directly on the recording workspace.
 
 ```stage
 recording
@@ -46,6 +42,21 @@ recording
 
 The tag "recording" now exists and is active — notice the empty root frame
 in the status bar.
+
+`sleep 1s`
+
+## The narration window joins
+
+The narration window is spawned directly on the recording workspace — no
+moving, no focusing, its urgent look intact from the first frame.
+
+```hlwm
+rule once tag=recording focus=off
+```
+
+```ctl
+screencastctl spawn narration
+```
 
 `sleep 1s`
 

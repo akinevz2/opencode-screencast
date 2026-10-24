@@ -342,6 +342,10 @@ export default Plugin.define({
               await ctl(["hlwm", "move", String(tag)])
               moved.push(w)
             }
+            // 4. Guarantee the view (and focus) end on the destination tag:
+            //    jumpto+move of the orchestrator can leave the view on its
+            //    original (now empty) tag.
+            await ctl(["hlwm", "use", String(tag)])
           }
           return {
             content: JSON.stringify({

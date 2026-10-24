@@ -319,19 +319,28 @@ export default Plugin.define({
           if (!dry_run) {
             // Create the destination tag if it does not exist yet.
             await ctl(["hlwm", "silent", "add", String(tag)])
-            for (const w of [...narration, ...orchestrators]) {
+            // 1. The narration window moves FIRST (jumpto focuses it,
+            //    which clears urgent — the flag is re-asserted right
+            //    after the workspace switch, once focus has left it).
+            for (const w of narration) {
               await ctl(["hlwm", "jumpto", w])
               await ctl(["hlwm", "move", String(tag)])
               moved.push(w)
             }
-            // Switch the view to the destination tag: the moved windows
-            // are only useful to the audience if the monitor shows them.
+            // 2. The workspace is focused (view switches to the destination
+            //    tag, narration visible on it) — and with focus gone from
+            //    the narration, its themed urgent look is restored.
             await ctl(["hlwm", "use", String(tag)])
-            // Hand focus back to the orchestrator: the narration window is
-            // display-only and must never be left holding focus, or it
-            // silently swallows the user's keystrokes.
-            if (orchestrators[0]) {
-              await ctl(["hlwm", "jumpto", orchestrators[0]])
+            for (const w of narration) {
+              await ctl(["hlwm", "attr", `clients.${w}.urgent`, "true"])
+            }
+            // 3. Then the orchestrator is brought over — focus naturally
+            //    lands on it as the last-moved window, never on the
+            //    display-only narration.
+            for (const w of orchestrators) {
+              await ctl(["hlwm", "jumpto", w])
+              await ctl(["hlwm", "move", String(tag)])
+              moved.push(w)
             }
           }
           return {

@@ -59,6 +59,8 @@ never obscure the agent.
 ```hlwm
 split h 0.5
 shift right
+split v 0.5
+focus up
 ```
 
 `sleep 1s`
@@ -93,7 +95,7 @@ the tiling layout instead of floating.
 
 ```hlwm
 use recording
-focus left
+focus down
 spawn alacritty --class ScreencastCmd --title screencast-term2 -e /home/kine/development/system/screencast_scripts/bin/screencast-shell screencast-term2
 ```
 

@@ -75,7 +75,6 @@ frame, ready for the advance.
 ```hlwm
 split h 0.5
 shift right
-split v 0.5
 ```
 
 `sleep 1s`
@@ -109,8 +108,6 @@ Now a second controlled terminal — with no rule in place this one joins
 the tiling layout instead of floating.
 
 ```hlwm
-use recording
-focus down
 spawn alacritty --class ScreencastCmd --title screencast-term2 -e /home/kine/development/system/screencast_scripts/bin/screencast-shell screencast-term2
 ```
 

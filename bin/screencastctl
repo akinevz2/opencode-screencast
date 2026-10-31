@@ -424,6 +424,264 @@ do_hlwm() {
 # herbstutil renders hlwm attribute values as JSON strings (with embedded
 # quotes for strings), so `.attributes.X | fromjson` yields the native
 # JSON value.
+
+# close <winid> [--force] — guarded close of a client by explicit winid.
+# PROTECTED targets (refused without --force):
+#   - the persisted orchestrator winid (runtime state, captured at
+#     presentation start — it CHURNS when the window is reopened)
+#   - any window whose title looks like an OpenCode TUI ("^OC |")
+#   - the narration window (class ScreencastNarr — display-only)
+# Rationale: two accidental closes of the user's conversation window on
+# 2026-10-31 (focus-based `herbstclient close` after a failed jumpto).
+# ALL closes must go through here — never raw `herbstclient close`.
+do_close_guarded() {
+  local winid=""
+  local force=0
+  for arg in "$@"; do
+    case "$arg" in
+      --force|-f) force=1 ;;
+      *) winid="$arg" ;;
+    esac
+  done
+  [[ -n "$winid" ]] || die "close: missing <winid>"
+  local title klass orch=""
+  title="$(herbstclient attr "clients.$winid.title" 2>/dev/null || echo "")"
+  klass="$(herbstclient attr "clients.$winid.class" 2>/dev/null || echo "")"
+  if [[ -r "$RUNTIME_DIR/orchestrator.winid" ]]; then
+    orch="$(<"$RUNTIME_DIR/orchestrator.winid")"
+  fi
+  local reason=""
+  if [[ -n "$orch" && "${winid,,}" == "${orch,,}" ]]; then
+    reason="target IS the orchestrator window (persisted id $orch)"
+  elif [[ "$title" =~ ^OC\  ]]; then
+    reason="target looks like an OpenCode TUI (title '$title')"
+  elif [[ "$klass" == "ScreencastNarr" ]]; then
+    reason="target is the display-only narration window"
+  fi
+  if [[ -n "$reason" && $force -ne 1 ]]; then
+    die "close: REFUSED — $reason. Passing '--force' overrides; are you sure?"
+  fi
+  if [[ -n "$reason" ]]; then
+    echo "close: --force given, closing protected target ($reason)" >&2
+  fi
+  herbstclient jumpto "$winid" >/dev/null 2>&1 || die "close: no such client $winid"
+  herbstclient close
+  echo "closed $winid${reason:+ (protected target, forced)}"
+}
+
+# spawn-oneshot <session> <cmd> — one command, then pause, then auto-close.
+# Like spawn-task but: after the command records its exit code, the wrapper
+# runs `pause` (dots/herbst — freezes until a keypress, self-titled window
+# name), and when pause exits the tmux session is killed, which closes the
+# floating window automatically.
+do_spawn_oneshot() {
+  local session cmd
+  if [[ $# -ge 2 ]]; then session="$1"; shift; else die "spawn-oneshot: <session> <cmd> required"; fi
+  [[ $# -gt 0 ]] || die "spawn-oneshot: missing command"
+  cmd="$*"
+  local script="$RUNTIME_DIR/$session.oneshot.sh"
+  local exitfile="$RUNTIME_DIR/$session.exit"
+  write_cmd_rc "$session" >/dev/null
+  rm -f "$exitfile"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' '__sc_set_title() { printf "\033]2;%s\033\\" "$1"; }'
+    printf '%s\n' '__sc_set_title running'
+    printf '%s\n' '('
+    printf '%s\n' "$cmd"
+    printf '%s\n' ')'
+    printf '%s\n' 'rc=$?'
+    printf '%s\n' "__sc_set_title \"done:\$rc\""
+    printf '%s\n' "printf '%s' \"\$rc\" > '$exitfile'"
+    printf '%s\n' "printf '\n[exit %s — press any key to close]\n' \"\$rc\""
+    printf '%s\n' 'command -v pause >/dev/null && pause'
+    # pause exited (keypress) — take the whole session (window) with us.
+    printf '%s\n' "tmux kill-session -t '=$session' 2>/dev/null"
+  } > "$script"
+  chmod +x "$script"
+  printf 'started=%s\n' "$(date +%s)" > "$RUNTIME_DIR/$session.task"
+  : > "$RUNTIME_DIR/$session.output.log"
+  tmux kill-session -t "=$session" 2>/dev/null || true
+  tmux new-session -d -s "$session" bash "$script"
+  has_session "$session" || { sleep 0.2; tmux new-session -d -s "$session" bash "$script" 2>/dev/null || true; }
+  has_session "$session" || die "spawn-oneshot: session '$session' died immediately"
+  record_pane "$session"
+  tmux pipe-pane -t "$(pane_target "$session")" \
+    "cat >> '$RUNTIME_DIR/$session.output.log'" 2>/dev/null || true
+  command -v alacritty >/dev/null || die "alacritty not found"
+  herbstclient rule once focus=on floating=on class=ScreencastCmd \
+    >/dev/null 2>&1 || true
+  herbstclient spawn alacritty --class ScreencastCmd --title "screencast: oneshot" -e tmux attach-session -t "=$session"
+
+  disown
+  echo "oneshot session: $session"
+}
+
+
+# actor-watch <session> <pattern> <message> [close-message] — detached
+# condition→message watcher (see screencast-actor-watcher). Pattern and
+# messages are passed base64-encoded to survive any quoting.
+do_actor_watch() {
+  local session="$1"; shift
+  [[ -n "$session" ]] || die "actor-watch: <session> required"
+  local pattern="$1"; shift
+  [[ $# -gt 0 ]] || die "actor-watch: <message> required"
+  local message="$1"; shift
+  local close_b64="" winid_b64="" close_msg=""
+  [[ $# -gt 0 ]] && { close_msg="$1"; shift; close_b64="$(printf '%s' "$close_msg" | base64 -w0)"; }
+  [[ $# -gt 0 ]] && winid_b64="$(printf '%s' "$1" | base64 -w0)"
+  local pattern_b64 message_b64
+  pattern_b64="$(printf '%s' "$pattern" | base64 -w0)"
+  message_b64="$(printf '%s' "$message" | base64 -w0)"
+  has_session "$session" || die "actor-watch: no session '$session'"
+  nohup bash "$SELF_DIR/screencast-actor-watcher" \
+    "$session" "$pattern_b64" "$message_b64" "$close_b64" "$winid_b64" \
+    >/dev/null 2>&1 &
+  disown
+  echo "watcher armed: session=$session pattern='$pattern'"
+}
+
+
+# situ — situation report: the whole stage as one JSON document, with
+# derived anomalies. Run before a demo, tee it from background runs, poll
+# it during: it answers "did the window appear / position correctly / is
+# anything stranded". `--watch [seconds]` re-emits on an interval.
+do_situ() {
+  local interval=""
+  # read-only reporting: drop errexit/pipefail locally — `[[ ]] &&` inside
+  # loop bodies and `while read` pipelines would otherwise abort mid-scan.
+  set +e +o pipefail 2>/dev/null || true
+  if [[ "${1:-}" == "--watch" ]]; then interval="${2:-3}"; fi
+
+  local tmp; tmp="$(mktemp -d)"
+
+  # --- monitor + focused tag --------------------------------------------
+  local mon ftag
+  mon="$(herbstclient attr monitors.focus.geometry 2>/dev/null || echo '0x0+0+0')"
+  ftag="$(herbstclient attr tags.focus.name 2>/dev/null || echo '?')"
+
+  # --- clients TSV: winid, class, tag, floating, minimized, deco, title, offscreen
+  local mon_x mon_y mon_w mon_h
+  [[ "$mon" =~ ([0-9]+)x([0-9]+)\+(-?[0-9]+)\+(-?[0-9]+) ]] \
+    && mon_w=${BASH_REMATCH[1]} mon_h=${BASH_REMATCH[2]} mon_x=${BASH_REMATCH[3]} mon_y=${BASH_REMATCH[4]} \
+    || { mon_w=0; mon_h=0; mon_x=0; mon_y=0; }
+  : > "$tmp/clients.tsv"
+  local w t cl tg fl mn geo gx gy gw gh offscreen
+  while IFS= read -r w; do
+    [[ -z "$w" ]] && continue
+    herbstclient attr "clients.$w.class" >/dev/null 2>&1 || continue
+    t="$(herbstclient attr "clients.$w.title" 2>/dev/null)"
+    cl="$(herbstclient attr "clients.$w.class" 2>/dev/null)"
+    tg="$(herbstclient attr "clients.$w.tag" 2>/dev/null)"
+    fl="$(herbstclient attr "clients.$w.floating" 2>/dev/null)"
+    mn="$(herbstclient attr "clients.$w.minimized" 2>/dev/null)"
+    geo="$(herbstclient attr "clients.$w.decoration_geometry" 2>/dev/null)"
+    offscreen=false
+    if [[ "$geo" =~ ([0-9]+)x([0-9]+)\+(-?[0-9]+)\+(-?[0-9]+) ]]; then
+      gw=${BASH_REMATCH[1]}; gh=${BASH_REMATCH[2]}; gx=${BASH_REMATCH[3]}; gy=${BASH_REMATCH[4]}
+      if (( gx < mon_x - 2 || gy < mon_y - 2 || gx + gw > mon_x + mon_w + 2 || gy + gh > mon_y + mon_h + 2 )); then
+        offscreen=true
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$w" "$cl" "$tg" "$fl" "$mn" "$geo" "$t" "$offscreen" >> "$tmp/clients.tsv"
+  done < <(herbstclient attr clients. 2>/dev/null | grep -oE '0x[0-9a-f]+' | sort -u)
+
+  # --- screencast-specific ------------------------------------------------
+  local orch="" orch_alive=false orch_ok=false
+  [[ -r "$RUNTIME_DIR/orchestrator.winid" ]] && orch="$(<"$RUNTIME_DIR/orchestrator.winid")"
+  if [[ -n "$orch" ]]; then
+    local ot
+    if ot="$(herbstclient attr "clients.$orch.title" 2>/dev/null)"; then
+      orch_alive=true
+      [[ "$ot" =~ ^OC\  ]] && orch_ok=true
+    fi
+  fi
+  local narr="" narr_tag=""
+  narr="$(herbstclient attr clients. 2>/dev/null | grep -oE '0x[0-9a-f]+' | sort -u | while read -r w; do
+    [[ "$(herbstclient attr "clients.$w.class" 2>/dev/null)" == "ScreencastNarr" ]] && echo "$w"
+  done | head -n1)" || true
+  narr="${narr%%$'\n'*}"
+  [[ -n "$narr" ]] && narr_tag="$(herbstclient attr "clients.$narr.tag" 2>/dev/null)" || true
+  local adv_sid=""
+  [[ -r "$RUNTIME_DIR/advance.sid" ]] && adv_sid="$(<"$RUNTIME_DIR/advance.sid")" || true
+
+  # --- tmux sessions TSV: name, attached-clients, has-cmd-window ---------
+  : > "$tmp/tmux.tsv"
+  local s att
+  while IFS= read -r s; do
+    [[ -z "$s" ]] && continue
+    [[ "$s" == "screencast-narr" ]] && continue
+    att="$(tmux list-clients -t "=$s" 2>/dev/null | wc -l)"
+    local haswin=false c
+    while IFS= read -r c; do
+      [[ -z "$c" ]] && continue
+      if [[ "$(herbstclient attr "clients.$c.class" 2>/dev/null)" == "ScreencastCmd" ]] \
+         && tmux list-panes -t "=$s" -F '#{pane_tty}' 2>/dev/null | grep -q .; then
+        # session alive; the attach-window check: is a ScreencastCmd client
+        # on the same tag attached to THIS session? Cheap proxy: attached
+        # count > 0 means a window IS present (only alacritty attaches).
+        [[ "$att" -gt 0 ]] && haswin=true || true
+      fi
+    done < <(herbstclient attr clients. 2>/dev/null | grep -oE '0x[0-9a-f]+' | sort -u)
+    [[ "$att" -gt 0 ]] && haswin=true
+    printf '%s\t%s\t%s\n' "$s" "$att" "$haswin" >> "$tmp/tmux.tsv"
+  done < <(tmux list-sessions -F '#S' 2>/dev/null)
+
+  # --- anomalies ----------------------------------------------------------
+  : > "$tmp/anomalies.txt"
+  [[ -n "$orch" && "$orch_alive" != "true" ]] && \
+    echo "orchestrator winid $orch persisted but the window is GONE (recapture needed)" >> "$tmp/anomalies.txt"
+  [[ "$orch_alive" == "true" && "$orch_ok" != "true" ]] && \
+    echo "orchestrator winid $orch alive but its title is not an OpenCode window (stale capture)" >> "$tmp/anomalies.txt"
+  [[ -z "$narr" ]] && \
+    echo "no narration window present" >> "$tmp/anomalies.txt"
+  [[ -n "$narr" && "$narr_tag" != "$ftag" ]] && \
+    echo "narration window on tag '$narr_tag', view on '$ftag' (stranded)" >> "$tmp/anomalies.txt"
+  while IFS=$'\t' read -r s att haswin; do
+    [[ -z "$s" ]] && continue
+    [[ "$s" == "screencast-narr" ]] && continue
+    if [[ "$att" -eq 0 && "$haswin" != "true" ]]; then
+      echo "tmux session '$s' has no attached client and no managed window — the demo is invisible" >> "$tmp/anomalies.txt"
+    fi
+  done < "$tmp/tmux.tsv"
+  awk -F'\t' '$8 == "true" { print "window " $1 " (" $2 ") has its decorated frame outside the monitor" }' \
+    "$tmp/clients.tsv" >> "$tmp/anomalies.txt"
+
+  # --- assemble with one jq -------------------------------------------------
+  jq -n \
+    --arg tag "$ftag" --arg mon "$mon" \
+    --rawfile ct "$tmp/clients.tsv" --rawfile tx "$tmp/tmux.tsv" \
+    --rawfile an "$tmp/anomalies.txt" \
+    --arg orch "$orch" --argjson orch_alive "$orch_alive" \
+    --arg narr "$narr" --arg narr_tag "$narr_tag" \
+    --arg adv_sid "$adv_sid" '
+    def rows: [split("\n")[] | select(length > 0) | split("\t")];
+    {
+      focused_tag: $tag,
+      monitor: $mon,
+      clients: ($ct | rows | map({
+        winid: .[0], class: .[1], tag: .[2],
+        floating: (.[3] == "true"), minimized: (.[4] == "true"),
+        deco: .[5], title: .[6], offscreen: (.[7] == "true")
+      })),
+      orchestrator: {winid: (if $orch == "" then null else $orch end), alive: $orch_alive},
+      narration: {winid: (if $narr == "" then null else $narr end),
+                  tag: (if $narr_tag == "" then null else $narr_tag end)},
+      tmux: ($tx | rows | map({session: .[0], attached: (.[1] | tonumber), window: (.[2] == "true")})),
+      advance_sid: (if $adv_sid == "" then null else $adv_sid end),
+      anomalies: ($an | rows)
+    }'
+  rm -rf "$tmp"
+
+  if [[ -n "$interval" ]]; then
+    while :; do
+      sleep "$interval"
+      do_situ
+    done
+  fi
+}
+
 do_attrjson() {
   local path="${1:-}" filter="${2:-}"
   [[ -n "$path" ]] || die "attrjson: object path required"
@@ -630,6 +888,10 @@ case "${1:-}" in
   hlwm)    shift; do_hlwm "$@" ;;
   attrjson) shift; do_attrjson "$@" ;;
   set-advance-session) shift; do_set_advance_session "$@" ;;
+  close) shift; do_close_guarded "$@" ;;
+  spawn-oneshot) shift; do_spawn_oneshot "$@" ;;
+  actor-watch) shift; do_actor_watch "$@" ;;
+  situ) do_situ "$@" ;;
   spawn-task) shift; do_spawn_task "$@" ;;
   task-status) shift; do_task_status "$@" ;;
   task-wait) shift; do_task_wait "$@" ;;

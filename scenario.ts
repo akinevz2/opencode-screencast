@@ -78,6 +78,9 @@ export type SceneAction =
   | (ActionBase & { readonly t: "user_await"; readonly expect: string; readonly timeoutMs: number; readonly ok: boolean; readonly recovered?: boolean })
   | (ActionBase & { readonly t: "user_expect"; readonly expect: string; readonly ok: boolean })
   | (ActionBase & { readonly t: "user_recover"; readonly strategy: string })
+  | (ActionBase & { readonly t: "oneshot_spawn"; readonly session: string; readonly command: string })
+  | (ActionBase & { readonly t: "free_run"; readonly session: string; readonly command: string; readonly captured?: boolean })
+  | (ActionBase & { readonly t: "actor_watch"; readonly session: string; readonly pattern: string; readonly message: string; readonly onCloseMessage?: string })
 
 /** Regex capture of managed-window output, resolved into named groups. */
 export interface CaptureSpec {
@@ -542,6 +545,310 @@ export class UserOps {
 }
 
 export type User = UserOps
+
+// ---------------------------------------------------------------------------
+// Orchestrator / Narration / Terminals — the cast of a presentation.
+// ---------------------------------------------------------------------------
+
+/** Does this title belong to an OpenCode TUI window? (Class is useless —
+ *  OpenCode runs in alacritty like everything else; the title is the only
+ *  stable discriminator, and it CHURNWinIds: ids are recycled on reopen.) */
+export const isOpenCodeTitle = (title: string): boolean => /^OC /.test(title)
+
+/** Winids that must never be closed/minimized by scenario actions. */
+export const isProtectedTitle = (title: string): boolean =>
+  isOpenCodeTitle(title) || title.startsWith("screencast:")
+
+/**
+ * The orchestrating OpenCode chat — the conversation this scenario runs
+ * from. Its winid CHURNS when the window is reopened, so identity comes
+ * from CAPTURE AT SCENARIO START: the focused window's winid is grabbed
+ * when the first scene opens (and persisted). `current()` re-resolves:
+ * persisted id if still alive, else a fresh capture from focus — NEVER a
+ * title guess. (The title prefix check lives only in the close guard as
+ * an extra safety net.)
+ */
+export class Orchestrator {
+  private constructor(
+    readonly id: WinId,
+    private readonly ctl: Ctl,
+  ) {}
+
+  /** Grab the focused window's winid NOW and persist it. */
+  static async capture(ctl: Ctl): Promise<Orchestrator> {
+    const parsed = JSON.parse(await ctl(["attrjson", "clients.focus", ".attributes.winid"]))
+    const id = winId(typeof parsed === "string" ? parsed : String(parsed))
+    await mkdir(path.dirname(USER_ORCH_FILE), { recursive: true })
+    await writeFile(USER_ORCH_FILE, id)
+    return new Orchestrator(id, ctl)
+  }
+
+  /** Persisted id if the client is alive; otherwise a fresh capture. */
+  static async current(ctl: Ctl): Promise<Orchestrator> {
+    let stored = ""
+    try {
+      stored = (await readFile(USER_ORCH_FILE, "utf8")).trim()
+    } catch { /* no capture yet */ }
+    if (stored !== "") {
+      const a = await readAttr(ctl, `clients.${stored}`)
+      if (a !== null && typeof a.winid === "string") return new Orchestrator(winId(String(a.winid)), ctl)
+    }
+    return Orchestrator.capture(ctl)
+  }
+
+  async title(): Promise<string | null> {
+    const a = await readAttr(this.ctl, `clients.${this.id}`)
+    return typeof a?.title === "string" ? a.title : null
+  }
+
+  async tag(): Promise<TagName | null> {
+    const a = await readAttr(this.ctl, `clients.${this.id}`)
+    return typeof a?.tag === "string" ? tagName(a.tag) : null
+  }
+
+  async focus(): Promise<this> {
+    await this.ctl(["hlwm", "jumpto", this.id])
+    return this
+  }
+}
+
+/** The audience-facing narration window (class ScreencastNarr). */
+export class Narration {
+  private constructor(
+    readonly id: WinId,
+    private readonly ctl: Ctl,
+    private readonly record: (action: SceneAction) => void,
+  ) {}
+
+  static async find(ctl: Ctl): Promise<Narration | null> {
+    const raw = await ctl(["attrjson", "clients", "[.children[] | select(. != \"focus.\") | sub(\"\\\\.$\"; \"\")]"])
+    const winids: string[] = JSON.parse(raw)
+    for (const w of winids) {
+      const a = await readAttr(ctl, `clients.${w}`)
+      if (a !== null && a.class === "ScreencastNarr") return new Narration(winId(String(a.winid ?? w)), ctl, () => undefined)
+    }
+    return null
+  }
+
+  static async spawn(ctl: Ctl, record: (action: SceneAction) => void): Promise<Narration> {
+    await ctl(["spawn", "narration"])
+    const n = await Narration.find(ctl)
+    if (n === null) throw new Error("narration window did not appear")
+    void record
+    return new Narration(n.id, ctl, record)
+  }
+
+  async say(text: string): Promise<this> {
+    await this.ctl(["say", text])
+    return this
+  }
+
+  async clear(): Promise<this> {
+    await this.ctl(["clear", "narration"])
+    return this
+  }
+
+  async rect(): Promise<Rect> {
+    const a = await readAttr(this.ctl, `clients.${this.id}`)
+    const g = a?.decoration_geometry
+    if (typeof g !== "object" || g === null) throw new Error("narration has no geometry")
+    const rec = g as Record<string, unknown>
+    return { x: Number(rec.x), y: Number(rec.y), w: Number(rec.width), h: Number(rec.height) }
+  }
+}
+
+// --- terminals --------------------------------------------------------------
+
+const RUNTIME = path.join(process.env.XDG_RUNTIME_DIR || "/tmp/opencode", "screencast")
+
+interface TerminalInit {
+  readonly session: string
+  readonly winid: WinId | null
+  readonly ctl: Ctl
+}
+
+/**
+ * A window that runs EXACTLY ONE command; on its completion it runs
+ * `~/.local/bin/pause` (self-titled "⏸ paused — press any key"), and when
+ * pause exits (keypress in the terminal) the window closes itself. Exit
+ * code observable via expectTaskExit — completion is recorded even after
+ * the window is gone.
+ */
+export class PauseTerminal {
+  private constructor(private readonly t: TerminalInit) {}
+
+  get session(): string { return this.t.session }
+  /** The floating window's id — resolved after spawn; null once closed. */
+  get winid(): WinId | null { return this.t.winid }
+
+  static async spawn(ctl: Ctl, command: string, opts: { session?: string } = {}): Promise<PauseTerminal> {
+    const session = opts.session ?? `oneshot-${Date.now() % 100000}`
+    const before = new Set<string>(JSON.parse(await ctl(["attrjson", "clients", "[.children[] | select(. != \"focus.\") | sub(\"\\\\.$\"; \"\")]"])))
+    await ctl(["spawn-oneshot", session, command])
+    // resolve the new window: the freshest ScreencastCmd client we didn't see before
+    let winid: WinId | null = null
+    for (let i = 0; i < 20; i++) {
+      const now: string[] = JSON.parse(await ctl(["attrjson", "clients", "[.children[] | select(. != \"focus.\") | sub(\"\\\\.$\"; \"\")]"]))
+      const fresh = now.filter((w) => !before.has(w))
+      if (fresh.length > 0) {
+        for (const w of fresh) {
+          const a = await readAttr(ctl, `clients.${w}`)
+          if (a !== null && a.class === "ScreencastCmd") { winid = winId(String(a.winid ?? w)); break }
+        }
+        if (winid !== null) break
+      }
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    return new PauseTerminal({ session, winid, ctl })
+  }
+
+  /** Wait for the command to finish (pause NOT included). */
+  async awaitExit(opts: AwaitOpts = {}): Promise<this> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 60_000)
+    for (;;) {
+      const raw = await this.t.ctl(["task-status", this.t.session]).catch(() => "")
+      if (/^STATE done/m.test(raw)) return this
+      if (/^STATE lost/m.test(raw)) throw new ExpectationFailed(`oneshot '${this.t.session}' was closed before finishing`)
+      if (Date.now() > deadline) throw new ExpectationFailed(`oneshot '${this.t.session}' did not finish in time`)
+      await new Promise((r) => setTimeout(r, opts.pollMs ?? 300))
+    }
+  }
+
+  /** Wait for the window to vanish — the pause keypress happened. */
+  async awaitClosed(opts: AwaitOpts = {}): Promise<this> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 120_000)
+    for (;;) {
+      if (this.t.winid === null) return this
+      const a = await readAttr(this.t.ctl, `clients.${this.t.winid}`)
+      if (a === null) return this
+      if (Date.now() > deadline) throw new ExpectationFailed(`oneshot window did not close in time`)
+      await new Promise((r) => setTimeout(r, opts.pollMs ?? 400))
+    }
+  }
+}
+
+/**
+ * A free, interactable terminal: multiple commands can run, output is
+ * teed to a persistent log in /tmp (runtime dir), and the scenario can
+ * advance upon detecting a regex in the output. The operator may close
+ * the window (keybind) or end-of-input it (Ctrl-D) at any time — the
+ * terminal "loses the handle": further runs fail gracefully.
+ */
+export class FreeTerminal {
+  private constructor(
+    readonly session: string,
+    private readonly winid: WinId | null,
+    private readonly ctl: Ctl,
+    private readonly record: (action: SceneAction) => void,
+    private logFile: string,
+  ) {}
+
+  static async spawn(ctl: Ctl, record: (action: SceneAction) => void, session = "free-terminal"): Promise<FreeTerminal> {
+    const before = new Set<string>(JSON.parse(await ctl(["attrjson", "clients", "[.children[] | select(. != \"focus.\") | sub(\"\\\\.$\"; \"\")]"])))
+    await ctl(["spawn", "command", session])
+    let winid: WinId | null = null
+    for (let i = 0; i < 20; i++) {
+      const now: string[] = JSON.parse(await ctl(["attrjson", "clients", "[.children[] | select(. != \"focus.\") | sub(\"\\\\.$\"; \"\")]"]))
+      for (const w of now.filter((x) => !before.has(x))) {
+        const a = await readAttr(ctl, `clients.${w}`)
+        if (a !== null && a.class === "ScreencastCmd") { winid = winId(String(a.winid ?? w)); break }
+      }
+      if (winid !== null) break
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    const logFile = path.join(RUNTIME, `${session}.output.log`)
+    return new FreeTerminal(session, winid, ctl, record, logFile)
+  }
+
+  /** Type a command into the window and collect its new output. */
+  async run(command: string): Promise<string> {
+    if (this.detached) throw new ExpectationFailed(`free terminal '${this.session}' was detached — no handle`)
+    const out = await this.ctl(["run", this.session, command])
+    this.record({ t: "free_run", session: this.session, command, at: 0 })
+    return out
+  }
+
+  /** Resolve when the log matches a regex — advance-the-presentation hook. */
+  async awaitOutput(re: RegExp, opts: { timeoutMs?: number; pollMs?: number } = {}): Promise<string> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 60_000)
+    let offset = 0
+    for (;;) {
+      let tail = ""
+      try { tail = (await readFile(this.logFile, "utf8")).slice(offset) } catch { tail = "" }
+      const m = tail.match(re)
+      if (m) return m[0]
+      if (Date.now() > deadline) throw new ExpectationFailed(`output of '${this.session}' never matched ${String(re)}`)
+      offset = Math.max(0, (await readFile(this.logFile, "utf8").catch(() => "")).length - 4096)
+      await new Promise((r) => setTimeout(r, opts.pollMs ?? 400))
+    }
+  }
+
+  private detached = false
+
+  /** Lose the handle: the window stays, the operator owns it from here. */
+  detach(): this {
+    this.detached = true
+    return this
+  }
+
+  /**
+   * Register a condition→message callback (the codified "advance" bridge):
+   * when NEW output of this window matches `match`, the watcher submits
+   * `message` into the orchestrating opencode session (advance.sid
+   * registry; outbox fallback). Runs detached — the scenario does NOT
+   * block; the message arrives as a user-side prompt, exactly like the
+   * classic `echo advance` mechanism.
+   */
+  on(match: string | RegExp, message: string): this {
+    const pattern = typeof match === "string" ? match : match.source
+    this.ctl(["actor-watch", this.session, pattern, message])
+    this.record({ t: "actor_watch", session: this.session, pattern, message, at: 0 })
+    return this
+  }
+
+  /** Same bridge for the window-closing condition (keybind or Ctrl-D): the
+   *  close message is submitted when the WINDOW disappears (the tmux
+   *  session deliberately survives window closes in this setup). */
+  onClose(message: string): this {
+    this.ctl(["actor-watch", this.session, "__never_matches__", "", message, this.winid ?? ""])
+    this.record({ t: "actor_watch", session: this.session, pattern: "<window-close>", message, at: 0 })
+    this.detached = true
+    return this
+  }
+}
+
+// --- hlwm event-wait ----------------------------------------------------------
+// This build delivers only the FIRST hook to a `herbstclient --wait`
+// listener (then it goes deaf — verified live), so the pattern is one
+// fresh, PATTERN-FILTERED listener per awaited event: non-matching hooks
+// are ignored by hlwm itself, and the first matching hook resolves.
+
+export type HlwmEvent =
+  | "window_title_changed"
+  | "focus_changed"
+  | "tag_changed"
+  | "tag_flags"
+  | "client_urgent"
+  | "fullscreen_changed"
+  | string // this build also emits others; keep it open
+
+/** Resolve when an event mentioning the target winid fires (or timeout). */
+export const expectEventFor = (winid: WinId, event: HlwmEvent, timeoutMs = 60_000): Expectation => ({
+  describe: `hlwm event '${event}' for ${winid}`,
+  check: async (ctl) => {
+    void ctl
+    try {
+      const { stdout } = await execFileAsync(
+        "herbstclient",
+        ["--wait", event, winid],
+        { timeout: timeoutMs, maxBuffer: 1024 * 1024 },
+      )
+      return stdout.trim().length > 0
+    } catch {
+      return false // timeout — the event never fired
+    }
+  },
+})
 export type UserStep =
   | { readonly t: "on_notification_click"; readonly title?: string }
   | { readonly t: "on_dismiss"; readonly winid?: WinId; readonly how: "close" | "minimize" }
@@ -820,9 +1127,15 @@ export class Scenario {
     return new Scenario(title, ctl)
   }
 
-  /** Open a new scene (or resume the last one for continued authoring). */
+  /** Open a new scene (or resume the last one for continued authoring).
+   *  On the FIRST scene, the orchestrator's winid is captured from the
+   *  currently focused window — the canonical identity for the whole
+   *  scenario (rescue, stranded, close-guard all key off it). */
   scene(name?: string): Scene {
     if (name === undefined && this.scenes.length > 0) return this.scenes[this.scenes.length - 1]
+    if (this.scenes.length === 0) {
+      void Orchestrator.capture(this.ctl).catch(() => undefined)
+    }
     const s = new Scene(name ?? `scene-${this.scenes.length + 1}`, this.ctl)
     this.scenes.push(s)
     return s

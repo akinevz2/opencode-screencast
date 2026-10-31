@@ -23,7 +23,7 @@ import { promisify } from "node:util"
 import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import type { Scenario, ScenarioSpec, Scene, Camera, Client, User } from "./scenario"
+import type { Scenario, ScenarioSpec, Scene, Camera, Client, User, ScenarioIssue } from "./scenario"
 
 const execFileAsync = promisify(execFile)
 
@@ -1229,6 +1229,59 @@ export default Plugin.define({
             await ctl(["hlwm", "jumpto", orch])
             const tag = JSON.parse(await ctl(["attrjson", "clients.focus", ".attributes.tag"]))
             return { content: JSON.stringify({ rescued: true, orchestrator: orch, tag: typeof tag === "string" ? tag : String(tag) }) }
+          },
+        },
+        {
+          name: "assert_orchestrator",
+          description:
+            "Deterministic orchestrator verification — call this as the FIRST operation after a user message, before any other operation: the user just typed in the OpenCode window, so client focus is (or should be) on it. Captures the focused winid as the orchestrator when it is an OpenCode-titled window (surviving winid churn across reopens), verifies against the persisted id, and repairs by jumping back to the persisted orchestrator if an unrelated window stole focus. Returns {ok, orchestrator, focused, repaired, reason}.",
+          input: {
+            type: "object",
+            properties: {
+              repair: { type: "boolean", description: "Jump focus back to the orchestrator when focus was stolen (default true)." },
+            },
+            additionalProperties: false,
+          },
+          execute: async (input: { repair?: boolean }) => {
+            const focus = JSON.parse(await ctl(["attrjson", "clients.focus", ".attributes | {winid, title}"]))
+            const winid = String(focus.winid ?? "")
+            const title = String(focus.title ?? "")
+            let stored = ""
+            try { stored = (await readFile(ORCH_FILE, "utf8")).trim() } catch { /* none */ }
+            const storedAlive = stored !== "" &&
+              (await ctl(["attrjson", `clients.${stored}`, ".attributes.winid"]).then(() => true).catch(() => false))
+
+            // Case 1: focus is the persisted, alive orchestrator.
+            if (storedAlive && winid === stored) {
+              return { content: JSON.stringify({ ok: true, orchestrator: stored, focused: winid, repaired: false, reason: "focus is the persisted orchestrator" }) }
+            }
+            // Case 2: focus is an OpenCode window but NOT the persisted one.
+            // With several OpenCode windows open, focus is ambiguous — do NOT
+            // blindly recapture: repair to the persisted id if it is alive.
+            if (/^OC /.test(title) && storedAlive && input.repair !== false) {
+              await ctl(["hlwm", "jumpto", stored])
+              return { content: JSON.stringify({ ok: true, orchestrator: stored, focused: stored, repaired: true, reason: "focus was on another OpenCode window; repaired to the persisted orchestrator" }) }
+            }
+            // Case 3: persisted id is dead (winid churn) — recapture, but only
+            // if the identity is unambiguous.
+            if (!storedAlive) {
+              const clients = JSON.parse(await ctl(["attrjson", "clients", "[.children[] | select(. != \"focus.\") | sub(\"\\\\.$\"; \"\")]"]))
+              const candidates: { winid: string; title: string; tag: string }[] = []
+              for (const w of clients) {
+                const a = JSON.parse(await ctl(["attrjson", `clients.${w}`, ".attributes | {winid, title, tag}"]))
+                if (/^OC /.test(String(a.title ?? ""))) {
+                  candidates.push({ winid: String(a.winid ?? w), title: String(a.title), tag: String(a.tag ?? "") })
+                }
+              }
+              if (candidates.length === 1) {
+                const c = candidates[0]
+                await mkdir(RUNTIME_DIR, { recursive: true })
+                await writeFile(ORCH_FILE, c.winid)
+                return { content: JSON.stringify({ ok: true, orchestrator: c.winid, focused: winid, repaired: false, reason: "persisted id was dead; sole OpenCode window re-captured" }) }
+              }
+              return { content: JSON.stringify({ ok: false, orchestrator: null, focused: winid, repaired: false, reason: "persisted orchestrator is dead and multiple OpenCode windows are open — disambiguate first", candidates }) }
+            }
+            return { content: JSON.stringify({ ok: false, orchestrator: stored || null, focused: winid, repaired: false, reason: "focus is not the orchestrator and repair failed — call this tool right after the user message" }) }
           },
         },
         {

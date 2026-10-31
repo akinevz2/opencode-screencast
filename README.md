@@ -200,3 +200,28 @@ herbstclient layout
 - Window-targeting helper scripts (`hc_center`, ...) operate on
   `clients.focus`; delegate `herbstclient jumpto <winid>` first when a
   scripted operation must target the screencast window.
+
+## Floating-layer & presentation tools (2026-10-31)
+
+Geometry: `window_rect`, `query_disjoint_rects`, `largest_free_rect`,
+`float_into`, `fit_on_screen`, `fit_floating_layer` (visible nudges by
+default, `lock: true` snaps under `herbstclient lock`). Tiling layer:
+`uncover_tiling` — splits a frame along a float's decorated edge so an
+obscured tiled window lands on the free side. Audience management:
+`whisper` (notify-send, `replace` re-uses the notification id,
+`rescue: true` arms a click action that jumps the view back),
+`stranded` (roll-call of orchestrator + narration windows), `rescue`.
+
+## Scenario layer (scenario.ts)
+
+Strongly-typed OOP authoring core: branded `WinId`/`TagName`, `Rect`,
+`Camera`, `Client`, `Scene` (records every action with ms offsets), and
+`Scenario` — saves replayable `<title>.scenario.json` (format v1).
+`Scene.user` is the test-framework surface over the human: `expect`,
+`await`, `recover` (+ `recoverFocus`/`recoverBy`), `awaitClick`, with
+expectation builders over hlwm primitives (`expectTag`, `expectFocus`,
+`expectFocusTitle`, `expectWindow`, `expectFloating`, `expectMinimized`,
+`expectRect`, `expectTaskState/Exit/Output`) and combinators
+(`UserOps.all/any/not`). `BackpropChecker.analyze` walks recorded actions
+against simulated state and flags `duplicate` / `yo-yo` / `undo-pair` /
+`oscillation` patterns (jarring screen flashes) at authoring time.

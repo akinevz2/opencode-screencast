@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# screencast-advance-watcher — forwards "advance" from delegation panes.
+#
+# Attached via `tmux pipe-pane` to a delegation terminal's pane (armed by
+# the generated per-session bashrc). Reads the pane's output on stdin; when
+# a line contains "advance" (the user typed `echo advance`), it:
+#
+#   1. submits an "advance" prompt to the orchestrating opencode session
+#      (session id from $RUNTIME_DIR/advance.sid, written by
+#      `screencastctl set-advance-session` or the /screencast command)
+#   2. returns focus to the orchestrator window
+#      (winid from $RUNTIME_DIR/orchestrator.winid, captured when the
+#      narration window is spawned — the focused window then is the TUI)
+#
+# Debounced (5s) so the echoed command line and the command output cannot
+# double-fire. Exits when the pane closes (stdin EOF).
+set -u
+
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
+DEBOUNCE="${SCREENCAST_ADVANCE_DEBOUNCE:-5}"
+
+last=0
+while IFS= read -r line; do
+  case "$line" in *advance*) ;; *) continue ;; esac
+  now="$(date +%s)"
+  (( now < last + DEBOUNCE )) && continue
+  last="$now"
+
+  sid="$(cat "$RUNTIME_DIR/advance.sid" 2>/dev/null || true)"
+  [[ -z "$sid" ]] && continue
+  orch="$(cat "$RUNTIME_DIR/orchestrator.winid" 2>/dev/null || true)"
+
+  nohup sh -c "opencode run -s '$sid' advance >/dev/null 2>&1" >/dev/null 2>&1 &
+  if [[ -n "$orch" ]]; then
+    herbstclient jumpto "$orch" 2>/dev/null
+  fi
+done

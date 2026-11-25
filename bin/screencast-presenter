@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# screencast-presenter — narration window program.
+#
+# FLICKER-FREE display: content is only ever appended (tail -F); nothing
+# repaints on a timer. Scrollback is purged in the background so the pane
+# stays bounded. `screencastctl clear narration` truncates the log and
+# appends an ANSI clear marker, which tail forwards to the pane — the view
+# wipes without any repaint loop.
+#
+# The narration log carries two feeds, both appended by screencastctl:
+#   - narration paragraphs (`screencastctl say`)
+#   - the hlwm operations opencode performs while broadcasting
+#     (`screencastctl hlwm` live-feeds each operation as it happens)
+#
+# The window is strictly display-only: it reads no input and fires no
+# commands, so it never needs focus — an accidentally focused narration
+# window cannot submit anything anywhere.
+set -u
+
+LOG="${1:?usage: screencast-presenter <logfile>}"
+
+# The pane is display-only: kill tty echo so stray input (keystrokes,
+# scroll-generated arrows) can never paint garbage on the narration.
+stty -echo 2>/dev/null || true
+
+title() { printf '\033]2;%s\033\\' "$1"; }
+title "narration"
+
+# Disable autowrap in the pane (DECRST 7): narration text is pre-wrapped
+# to the pane width by screencastctl, so the pane itself must never
+# soft-wrap (or, after a shrink, clip) a line. tmux 3.6 has no wrap
+# option anymore — the pane's own DECAWM mode is the only switch.
+printf '\033[?7l'
+
+# Background scrollback purge — invisible (only drops scrolled-off lines).
+purge_history() {
+  while :; do
+    tmux clear-history -t "${TMUX_PANE:?}" 2>/dev/null || true
+    sleep 1
+  done
+}
+purge_history &
+
+# Display loop: purely incremental; survives log truncation via -F.
+# stderr (tail's "file truncated" notice) is suppressed — the pane must
+# only ever show narration content.
+exec tail -n +1 -F "$LOG" 2>/dev/null

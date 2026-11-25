@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# screencast-actor-watcher — generic condition→message bridge for Actors.
+#
+# Watches a managed window (via its persistent output log AND its tmux
+# session liveness) and, when a condition fires, submits a message into
+# the orchestrating opencode session (advance.sid registry) — the fluent
+# Actor.on()/onClose() callbacks compile down to one of these.
+#
+# Usage (spawned detached by `screencastctl actor-watch`):
+#   actor-watcher <session> <b64-pattern> <b64-message> [b64-close-message]
+#
+#   pattern        ECMAScript-ish ERE matched against NEW log lines
+#   message        submitted when the pattern matches (once)
+#   close-message  submitted when the tmux session dies (window closed /
+#                  Ctrl-D EOF) — the "lost the handle" condition
+#
+# Message delivery: `opencode run -s "$ADVANCE_SID" <message>` when the
+# advance.sid registry exists; otherwise appended to actor-messages.outbox
+# (durable evidence, no chat injection available).
+set -u
+
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode}/screencast"
+session="$1"; pattern_b64="$2"; message_b64="$3"; close_b64="${4:-}"
+
+pattern="$(printf '%s' "$pattern_b64" | base64 -d)"
+message="$(printf '%s' "$message_b64" | base64 -d)"
+close_msg="$(printf '%s' "$close_b64" | base64 -d 2>/dev/null || true)"
+log="$RUNTIME_DIR/$session.output.log"
+
+deliver() {
+  local msg="$1"
+  local sid
+  sid="$(cat "$RUNTIME_DIR/advance.sid" 2>/dev/null || true)"
+  if [[ -n "$sid" ]]; then
+    nohup sh -c "opencode run -s '$sid' '$msg' >/dev/null 2>&1" >/dev/null 2>&1 &
+    echo "$(date +%s) delivered(via-session): $msg" >> "$RUNTIME_DIR/actor-watch.log"
+  else
+    echo "$(date +%s) outbox(no advance.sid): $msg" >> "$RUNTIME_DIR/actor-messages.outbox"
+  fi
+}
+
+# condition 1: pattern in NEW log lines (tail from end of file)
+matched=0
+( tail -n 0 -F "$log" 2>/dev/null | while IFS= read -r line; do
+    printf '%s\n' "$line" | grep -qE "$pattern" && echo MATCH
+  done ) | while read -r _; do
+  if [[ $matched -eq 0 ]]; then
+    matched=1
+    deliver "$message"
+    exit 0
+  fi
+done &
+
+# condition 2: the WINDOW closed (winid gone) or the session died —
+# sessions here are persistent (they survive window closes by design), so
+# the authoritative close condition is client presence when a winid is
+# provided; session death remains the fallback.
+winid="$(printf '%s' "${5:-}" | base64 -d 2>/dev/null || true)"
+while :; do
+  if [[ -n "$winid" ]]; then
+    herbstclient attr "clients.$winid.class" >/dev/null 2>&1 || break
+  elif ! tmux has-session -t "=$session" 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+if [[ -n "$close_msg" ]]; then
+  sleep 0.3  # let the final log lines land
+  deliver "$close_msg"
+fi

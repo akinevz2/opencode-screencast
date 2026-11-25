@@ -100,30 +100,6 @@ interface ToolDef {
 export default Plugin.define({
   id: "screencast",
   async setup(ctx) {
-    // ARM ON EVERY USER MESSAGE: the turn begins — focus is
-    // authoritative right now (the user just typed into the TUI), so
-    // `herbctl orchestrate grab` captures the orchestrator wid for
-    // the turn and `watch` arms the per-session loss daemon
-    // (event-driven; dies with the session window). The herbctl
-    // orchestrate contract (opencode-hlwm-orchestrator).
-    try {
-      ctx.event.subscribe(async (event) => {
-        const type = (event as { type?: string }).type ?? ""
-        if (type !== "message.updated") return
-        const msg = (event as { properties?: { message?: { role?: string } } })
-          .properties?.message
-        if (msg?.role !== "user") return
-        const { execSync } = await import("node:child_process")
-        try {
-          execSync("herbctl orchestrate grab >/dev/null 2>&1 && herbctl orchestrate watch >/dev/null 2>&1", { stdio: "ignore" })
-        } catch {
-          // no herbctl — the plugin's own orchestrator file stands
-        }
-      })
-    } catch {
-      // event surface unavailable — the grab-on-first-tool-call
-      // contract in the orchestrate skill still covers the turn
-    }
     const tools: ToolDef[] = [
       // ---------------------------------------------------------------------
       // Feature 1 — screen interaction
